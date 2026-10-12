@@ -2,16 +2,18 @@
 
 The simulation runs on the CPU in one batched C call per step; the policy,
 rollout storage, advantage computation and updates all stay on the GPU, so the
-only per-step transfers are one observation batch up and one action batch down.
+only per-step transfers are observation batches up and action batches down.
 
     python3 python/train_ppo.py --opponent bot
-    python3 python/train_ppo.py --opponent self      # self-play, evaluated against the bot
+    python3 python/train_ppo.py --opponent self      # latest vs latest
+    python3 python/train_ppo.py --opponent mixed     # scripted bot + frozen past checkpoints
 
 Build the simulation first with `make sim`.
 """
 import argparse
 import collections
 import os
+import random
 import sys
 import time
 
@@ -24,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pfenv import VecPlatformFighter  # noqa: E402
 
 BUTTONS = ("jump", "down", "light", "heavy", "shield")
+ACTION_SIZE = 1 + len(BUTTONS)
 # Start with buttons mostly released: an untrained policy that holds shield or
 # mashes jump half the time never gets to see what attacking does.
 BUTTON_BIAS = (-2.0, -2.0, -1.0, -1.5, -2.0)
@@ -31,8 +34,16 @@ BUTTON_BIAS = (-2.0, -2.0, -1.0, -1.5, -2.0)
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--opponent", choices=("bot", "self"), default="bot")
-    p.add_argument("--num-envs", type=int, default=1024)
+    p.add_argument("--opponent", choices=("bot", "self", "mixed"), default="bot")
+    p.add_argument("--num-envs", type=int, default=1024, help="matches, for --opponent bot or self")
+    p.add_argument("--bot-envs", type=int, default=256, help="mixed: matches against the scripted bot")
+    p.add_argument("--pool-envs", type=int, default=768, help="mixed: matches against frozen checkpoints")
+    p.add_argument("--pool-groups", type=int, default=8, help="mixed: frozen opponents in play at once")
+    p.add_argument("--pool-max", type=int, default=40, help="mixed: snapshots kept")
+    p.add_argument("--pool-init", nargs="*", default=[], help="mixed: checkpoints to seed the pool with")
+    p.add_argument("--snapshot-every", type=int, default=50, help="mixed: updates between new snapshots")
+    p.add_argument("--resample-every", type=int, default=10, help="mixed: updates between opponent reshuffles")
+    p.add_argument("--latest-prob", type=float, default=0.3, help="mixed: chance a group gets the newest snapshot")
     p.add_argument("--rollout", type=int, default=64, help="steps per env between updates")
     p.add_argument("--frame-skip", type=int, default=4, help="simulation frames per agent step")
     p.add_argument("--total-steps", type=int, default=300_000_000, help="agent steps to train for")
@@ -47,7 +58,7 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=4)
     p.add_argument("--minibatches", type=int, default=4)
     p.add_argument("--hidden", type=int, default=256)
-    p.add_argument("--init", default=None, help="checkpoint to start from, e.g. a bot-trained one for self-play")
+    p.add_argument("--init", default=None, help="checkpoint to start the learner from")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="auto")
     p.add_argument("--eval-every", type=int, default=25, help="updates between bot evaluations (self-play only)")
@@ -72,6 +83,12 @@ def mlp(sizes, out_gain):
         if not last:
             layers.append(nn.Tanh())
     return nn.Sequential(*layers)
+
+
+def sample_actions(logits):
+    move = torch.multinomial(F.softmax(logits[:, :3], dim=-1), 1)
+    buttons = (torch.rand_like(logits[:, 3:]) < torch.sigmoid(logits[:, 3:])).long()
+    return torch.cat([move, buttons], dim=1)
 
 
 class Agent(nn.Module):
@@ -99,9 +116,7 @@ class Agent(nn.Module):
     @torch.no_grad()
     def act(self, obs):
         logits = self.policy(obs)
-        move = torch.multinomial(F.softmax(logits[:, :3], dim=-1), 1)
-        buttons = (torch.rand_like(logits[:, 3:]) < torch.sigmoid(logits[:, 3:])).long()
-        actions = torch.cat([move, buttons], dim=1)
+        actions = sample_actions(logits)
         logp, _ = self._log_prob_entropy(logits, actions)
         return actions, logp, self.value(obs).squeeze(1)
 
@@ -138,6 +153,126 @@ def evaluate_vs_bot(agent, env, device, episodes):
     return wins / max(finished, 1), finished
 
 
+class SimpleArena:
+    """All matches against the bot, or all latest-vs-latest self-play.
+
+    An arena presents one row per character the learner controls. step() returns
+    the next observations, rewards, which rows' matches ended, and (for those
+    rows) whether the learner won."""
+
+    def __init__(self, args, device):
+        self.device = device
+        self.env = VecPlatformFighter(args.num_envs, opponent=args.opponent, frame_skip=args.frame_skip)
+        self.agents = self.env.num_agents
+        self.obs_size = self.env.obs_size
+        self.batch = self.env.num_envs * self.agents
+        self.kinds = [args.opponent] * self.batch
+        self.player = torch.arange(self.batch, device=device) % self.agents
+
+    def reset(self):
+        return to_device(self.env.reset(), self.device).view(self.batch, self.obs_size)
+
+    def step(self, actions):
+        obs, reward, done, winners = step_env(self.env, actions, self.device)
+        won = torch.from_numpy(winners).to(self.device).repeat_interleave(self.agents) == self.player
+        return obs, reward, done.repeat_interleave(self.agents), won
+
+    def after_update(self, update, agent):
+        return {}
+
+
+class FrozenOpponents:
+    """Several frozen policy networks evaluated in one batched pass."""
+
+    def __init__(self, groups, obs_size, hidden, device):
+        sizes = [obs_size, hidden, hidden, 3 + len(BUTTONS)]
+        self.weights = [torch.zeros(groups, sizes[i + 1], sizes[i], device=device) for i in range(3)]
+        self.biases = [torch.zeros(groups, 1, sizes[i + 1], device=device) for i in range(3)]
+
+    def assign(self, group, snapshot):
+        for i in range(3):
+            self.weights[i][group] = snapshot[f"{2 * i}.weight"]
+            self.biases[i][group, 0] = snapshot[f"{2 * i}.bias"]
+
+    @torch.no_grad()
+    def act(self, obs):
+        """obs: (groups, rows per group, obs_size) -> actions (groups * rows, 6)."""
+        x = obs
+        for i in range(3):
+            x = torch.baddbmm(self.biases[i], x, self.weights[i].transpose(1, 2))
+            if i < 2:
+                x = torch.tanh(x)
+        return sample_actions(x.reshape(-1, x.shape[-1]))
+
+
+class MixedArena:
+    """Some matches against the scripted bot and the rest against a pool of
+    frozen snapshots of earlier learners. Against the pool the learner plays
+    player 1 in half the matches and player 2 in the other half, and only its
+    own side's experience is used."""
+
+    def __init__(self, args, device):
+        if args.pool_envs % (2 * args.pool_groups) != 0:
+            raise ValueError("--pool-envs must be a multiple of 2 * --pool-groups")
+        self.args, self.device = args, device
+        self.bot_env = VecPlatformFighter(args.bot_envs, opponent="bot", frame_skip=args.frame_skip)
+        self.pool_env = VecPlatformFighter(args.pool_envs, opponent="self", frame_skip=args.frame_skip)
+        self.obs_size = self.bot_env.obs_size
+        self.batch = args.bot_envs + args.pool_envs
+        self.kinds = ["bot"] * args.bot_envs + ["pool"] * args.pool_envs
+        self.rows = torch.arange(args.pool_envs, device=device)
+        self.side = self.rows % 2  # which player the learner controls in each pool match
+        self.opponents = FrozenOpponents(args.pool_groups, self.obs_size, args.hidden, device)
+        self.pool = []
+        self.opp_obs = None
+        self.rng = random.Random(args.seed)
+
+    def add_snapshot(self, policy_state):
+        self.pool.append({k: v.detach().clone() for k, v in policy_state.items()})
+        if len(self.pool) > self.args.pool_max:
+            # Keep the oldest entry as a fixed reference; drop a random middle one.
+            self.pool.pop(self.rng.randrange(1, len(self.pool) - 1))
+
+    def resample(self):
+        for group in range(self.args.pool_groups):
+            newest = self.rng.random() < self.args.latest_prob
+            self.opponents.assign(group, self.pool[-1] if newest else self.rng.choice(self.pool))
+
+    def _split(self, pool_obs):
+        pool_obs = pool_obs.view(self.args.pool_envs, 2, self.obs_size)
+        self.opp_obs = pool_obs[self.rows, 1 - self.side]
+        return pool_obs[self.rows, self.side]
+
+    def reset(self):
+        bot_obs = to_device(self.bot_env.reset(), self.device)
+        mine = self._split(to_device(self.pool_env.reset(), self.device))
+        return torch.cat([bot_obs, mine])
+
+    def step(self, actions):
+        n_bot = self.args.bot_envs
+        bot_obs, bot_reward, bot_done, bot_winners = step_env(self.bot_env, actions[:n_bot], self.device)
+
+        opp_actions = self.opponents.act(self.opp_obs.view(self.args.pool_groups, -1, self.obs_size))
+        both = torch.zeros(self.args.pool_envs, 2, ACTION_SIZE, dtype=torch.long, device=self.device)
+        both[self.rows, self.side] = actions[n_bot:]
+        both[self.rows, 1 - self.side] = opp_actions
+        pool_obs, pool_reward, pool_done, pool_winners = step_env(self.pool_env, both, self.device)
+        mine = self._split(pool_obs)
+        my_reward = pool_reward.view(-1, 2)[self.rows, self.side]
+
+        won = torch.cat([torch.from_numpy(bot_winners).to(self.device) == 0,
+                         torch.from_numpy(pool_winners).to(self.device) == self.side])
+        return (torch.cat([bot_obs, mine]), torch.cat([bot_reward, my_reward]),
+                torch.cat([bot_done, pool_done]), won)
+
+    def after_update(self, update, agent):
+        if update % self.args.snapshot_every == 0:
+            self.add_snapshot(agent.policy.state_dict())
+        if update % self.args.resample_every == 0:
+            self.resample()
+        return {"charts/pool_size": len(self.pool)}
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -145,19 +280,25 @@ def main():
     device = torch.device(("cuda" if torch.cuda.is_available() else "cpu") if args.device == "auto" else args.device)
     torch.set_float32_matmul_precision("high")
 
-    env = VecPlatformFighter(args.num_envs, opponent=args.opponent, frame_skip=args.frame_skip)
+    arena = MixedArena(args, device) if args.opponent == "mixed" else SimpleArena(args, device)
+    obs_size, batch = arena.obs_size, arena.batch
     eval_env = None
     if args.opponent == "self":
         eval_env = VecPlatformFighter(args.eval_envs, opponent="bot", frame_skip=args.frame_skip)
-    agents_per_env = env.num_agents
-    batch = env.num_envs * agents_per_env  # one row per controlled character
     steps_per_update = batch * args.rollout
     num_updates = max(1, args.total_steps // steps_per_update)
     minibatch = steps_per_update // args.minibatches
 
-    agent = Agent(env.obs_size, args.hidden).to(device)
+    agent = Agent(obs_size, args.hidden).to(device)
     if args.init:
         agent.load_state_dict(torch.load(args.init, map_location=device)["model"])
+    if args.opponent == "mixed":
+        for path in args.pool_init:
+            model = torch.load(path, map_location=device)["model"]
+            arena.add_snapshot({k[len("policy."):]: v for k, v in model.items() if k.startswith("policy.")})
+        if not arena.pool:
+            arena.add_snapshot(agent.policy.state_dict())
+        arena.resample()
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
 
     run = None
@@ -170,15 +311,15 @@ def main():
     latest_path = os.path.join(args.checkpoint_dir, f"ppo-{tag}-latest.pt")
 
     def save(path, steps):
-        torch.save({"model": agent.state_dict(), "args": vars(args), "obs_size": env.obs_size,
+        torch.save({"model": agent.state_dict(), "args": vars(args), "obs_size": obs_size,
                     "hidden": args.hidden, "steps": steps}, path)
 
     print(f"device {device} ({torch.cuda.get_device_name(0) if device.type == 'cuda' else 'cpu'}), "
-          f"{env.num_envs} envs x {agents_per_env} agent(s), {steps_per_update} steps/update, "
+          f"opponent {args.opponent}, {batch} learner rows, {steps_per_update} steps/update, "
           f"{num_updates} updates, frame skip {args.frame_skip}", flush=True)
 
-    obs_buf = torch.zeros(args.rollout, batch, env.obs_size, device=device)
-    act_buf = torch.zeros(args.rollout, batch, 1 + len(BUTTONS), dtype=torch.long, device=device)
+    obs_buf = torch.zeros(args.rollout, batch, obs_size, device=device)
+    act_buf = torch.zeros(args.rollout, batch, ACTION_SIZE, dtype=torch.long, device=device)
     logp_buf = torch.zeros(args.rollout, batch, device=device)
     val_buf = torch.zeros(args.rollout, batch, device=device)
     rew_buf = torch.zeros(args.rollout, batch, device=device)
@@ -186,10 +327,12 @@ def main():
 
     ep_return = torch.zeros(batch, device=device)
     ep_length = torch.zeros(batch, device=device)
-    recent = collections.deque(maxlen=2000)  # (return, length, won) of finished episodes
+    kinds = sorted(set(arena.kinds))
+    kind_of_row = np.array([kinds.index(k) for k in arena.kinds])
+    recent = {k: collections.deque(maxlen=2000) for k in kinds}  # (return, length, won) per finished match
     episodes_total = 0
 
-    obs = to_device(env.reset(), device).view(batch, env.obs_size)
+    obs = arena.reset()
     global_step = 0
     start = time.time()
 
@@ -202,18 +345,17 @@ def main():
         for t in range(args.rollout):
             actions, logp, value = agent.act(obs)
             obs_buf[t], act_buf[t], logp_buf[t], val_buf[t] = obs, actions, logp, value
-            obs, reward, done, winners = step_env(env, actions, device)
-            done_agents = done.repeat_interleave(agents_per_env)
-            rew_buf[t], done_buf[t] = reward, done_agents
+            obs, reward, done, won = arena.step(actions)
+            rew_buf[t], done_buf[t] = reward, done
             ep_return += reward
             ep_length += 1
             if done.any():
-                idx = done_agents.nonzero(as_tuple=True)[0]
-                returns, lengths = ep_return[idx].cpu().numpy(), ep_length[idx].cpu().numpy()
-                players = (idx % agents_per_env).cpu().numpy()
-                won = winners[(idx // agents_per_env).cpu().numpy()] == players
-                recent.extend(zip(returns, lengths, won))
-                episodes_total += int(done.sum())
+                idx = done.nonzero(as_tuple=True)[0]
+                rows = idx.cpu().numpy()
+                results = zip(ep_return[idx].cpu().numpy(), ep_length[idx].cpu().numpy(), won[idx].cpu().numpy())
+                for row, result in zip(rows, results):
+                    recent[kinds[kind_of_row[row]]].append(result)
+                episodes_total += len(rows)
                 ep_return[idx] = 0
                 ep_length[idx] = 0
         global_step += steps_per_update
@@ -232,8 +374,8 @@ def main():
                 next_value = val_buf[t]
             ret_buf = adv_buf + val_buf
 
-        b_obs = obs_buf.view(-1, env.obs_size)
-        b_act = act_buf.view(-1, 1 + len(BUTTONS))
+        b_obs = obs_buf.view(-1, obs_size)
+        b_act = act_buf.view(-1, ACTION_SIZE)
         b_logp, b_adv, b_ret, b_val = logp_buf.view(-1), adv_buf.view(-1), ret_buf.view(-1), val_buf.view(-1)
 
         update_start = time.time()
@@ -279,23 +421,24 @@ def main():
         for name, rate in zip(BUTTONS, rates.tolist()):
             log[f"actions/{name}_rate"] = rate
         log["actions/idle_move_rate"] = (b_act[:, 0] == 1).float().mean().item()
-        if recent:
-            results = np.array(recent, dtype=np.float64)
-            log["charts/episode_return"] = results[:, 0].mean()
-            log["charts/episode_length"] = results[:, 1].mean()
-            # Against the bot this is the real win rate; in self-play it is ~0.5 by construction.
-            log["charts/train_win_rate"] = results[:, 2].mean()
+        # Win rates are over each opponent kind's last 2000 matches. Against
+        # "self" it is ~0.5 by construction and says nothing about strength.
+        for kind in kinds:
+            if recent[kind]:
+                results = np.array(recent[kind], dtype=np.float64)
+                log[f"charts/episode_return_vs_{kind}"] = results[:, 0].mean()
+                log[f"charts/episode_length_vs_{kind}"] = results[:, 1].mean()
+                log[f"charts/win_rate_vs_{kind}"] = results[:, 2].mean()
         if eval_env is not None and (update % args.eval_every == 0 or update == num_updates):
             win_rate, played = evaluate_vs_bot(agent, eval_env, device, args.eval_envs)
             log["charts/win_rate_vs_bot"] = win_rate
             log["charts/eval_episodes"] = played
+        log.update(arena.after_update(update, agent))
         if run:
             run.log(log, step=global_step)
         if update % 10 == 0 or update == 1 or update == num_updates:
-            win_key = "charts/win_rate_vs_bot" if "charts/win_rate_vs_bot" in log else "charts/train_win_rate"
-            print(f"update {update}/{num_updates} steps {global_step:,} "
-                  f"return {log.get('charts/episode_return', float('nan')):+.3f} "
-                  f"{win_key.split('/')[1]} {log.get(win_key, float('nan')):.3f} "
+            wins = " ".join(f"{k.split('/')[1]} {v:.3f}" for k, v in sorted(log.items()) if "win_rate" in k)
+            print(f"update {update}/{num_updates} steps {global_step:,} {wins} "
                   f"entropy {log['losses/entropy']:.3f} sps {log['perf/steps_per_second']:,.0f} "
                   f"elapsed {elapsed / 60:.1f}m", flush=True)
 
