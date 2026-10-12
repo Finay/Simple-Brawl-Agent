@@ -10,7 +10,7 @@ CXXFLAGS += -std=c++17 -Wall -Wextra -fPIC -Isim/include -MMD -MP
 BUILD := build
 UNAME := $(shell uname -s)
 
-SIM_SRCS := sim/src/geometry.cpp sim/src/sim.cpp sim/src/bot.cpp
+SIM_SRCS := sim/src/geometry.cpp sim/src/sim.cpp sim/src/bot.cpp sim/src/policy.cpp
 SIM_OBJS := $(SIM_SRCS:%.cpp=$(BUILD)/%.o)
 API_OBJS := $(BUILD)/sim/src/c_api.o
 APP_OBJS := $(BUILD)/app/main.o

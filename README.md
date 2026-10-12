@@ -19,7 +19,7 @@ make play       # play against the scripted bot
 make sim        # headless only: library and tests, no OpenGL needed
 ```
 
-Viewer options: `build/pf_play --p1 human|bot|idle --p2 human|bot|idle`.
+Viewer options: `build/pf_play --p1 human|bot|idle|agent:FILE --p2 human|bot|idle|agent:FILE`. `agent:FILE` plays a trained policy exported with `python/export_policy.py`, for example `build/pf_play --p1 agent:models/bot-champion.pfp --p2 bot`.
 
 | | Move | Jump | Down | Light | Heavy | Shield |
 |---|---|---|---|---|---|---|

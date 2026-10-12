@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pf/bot.h"
+#include "pf/policy.h"
 #include "pf/sim.h"
 
 using namespace pf;
@@ -267,12 +268,25 @@ void render(GLFWwindow* window, LineBatch& batch, const Game& game) {
     batch.flush(kViewCx - w / 2.0f, kViewCy - h / 2.0f, w, h);
 }
 
-enum class Controller { Human, Bot, Idle };
+enum class Controller { Human, Bot, Idle, Agent };
 
-Controller parseController(const char* s) {
-    if (std::strcmp(s, "bot") == 0) return Controller::Bot;
-    if (std::strcmp(s, "idle") == 0) return Controller::Idle;
-    return Controller::Human;
+// "human", "bot", "idle", or "agent:<file>" for a trained policy.
+bool parseController(const char* s, Controller& ctl, Policy& policy) {
+    if (std::strncmp(s, "agent:", 6) == 0) {
+        std::string error;
+        if (!policy.load(s + 6, &error)) {
+            std::fprintf(stderr, "%s: %s\n", s + 6, error.c_str());
+            return false;
+        }
+        ctl = Controller::Agent;
+    } else if (std::strcmp(s, "bot") == 0) {
+        ctl = Controller::Bot;
+    } else if (std::strcmp(s, "idle") == 0) {
+        ctl = Controller::Idle;
+    } else {
+        ctl = Controller::Human;
+    }
+    return true;
 }
 
 Input keyboardInput(GLFWwindow* w, int player) {
@@ -320,7 +334,7 @@ bool writeBmp(const std::string& path, int w, int h, const std::vector<unsigned 
 
 void usage() {
     std::puts(
-        "pf_play [--p1 human|bot|idle] [--p2 human|bot|idle]\n"
+        "pf_play [--p1 human|bot|idle|agent:FILE] [--p2 human|bot|idle|agent:FILE]\n"
         "        [--screenshot out.bmp --frames N [--wait hitbox|windup|shield]]\n"
         "\n"
         "P1: A/D move, W jump, S down, F light, G heavy, H shield\n"
@@ -332,16 +346,16 @@ void usage() {
 
 int main(int argc, char** argv) {
     Controller ctl[kNumPlayers] = {Controller::Human, Controller::Bot};
+    Policy policy[kNumPlayers];
     std::string shot;
     int shot_frames = 0;
     std::string wait_for;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         bool has_value = i + 1 < argc;
-        if (a == "--p1" && has_value) {
-            ctl[0] = parseController(argv[++i]);
-        } else if (a == "--p2" && has_value) {
-            ctl[1] = parseController(argv[++i]);
+        if ((a == "--p1" || a == "--p2") && has_value) {
+            int p = a == "--p1" ? 0 : 1;
+            if (!parseController(argv[++i], ctl[p], policy[p])) return 1;
         } else if (a == "--screenshot" && has_value) {
             shot = argv[++i];
         } else if (a == "--frames" && has_value) {
@@ -380,6 +394,7 @@ int main(int argc, char** argv) {
 
     auto inputFor = [&](int p) {
         if (ctl[p] == Controller::Bot) return botInput(game, p);
+        if (ctl[p] == Controller::Agent) return policy[p].next(game, p);
         if (ctl[p] == Controller::Human && shot.empty()) return keyboardInput(window, p);
         return Input{};
     };
