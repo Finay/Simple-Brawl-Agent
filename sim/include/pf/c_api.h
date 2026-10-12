@@ -44,7 +44,8 @@ void pf_get_status(const pf_env* env, pf_status* out);
  *              Note move is 0/1/2 here, unlike pf_step's -1/0/1.
  *              Every step's buttons count as new presses, so no release step is needed.
  *   obs        N * A * pf_obs_size() floats
- *   rewards    N * A floats: (damage dealt - damage taken) / 100, +1 per stock taken, -1 per stock lost
+ *   rewards    N * A floats: (damage dealt - damage taken) / 100, +1 per stock taken, -1 per stock lost,
+ *              plus the optional proximity bonus below
  *   terminated N bytes: the match ended by a player running out of stocks
  *   truncated  N bytes: the match ended on the time limit
  *   winners    N ints: winning player or -1, meaningful only where a match ended
@@ -58,6 +59,12 @@ void pf_vec_destroy(pf_vec* vec);
 int pf_vec_num_envs(const pf_vec* vec);
 int pf_vec_agents(const pf_vec* vec);
 void pf_vec_reset(pf_vec* vec, float* obs);
+
+/* Optional shaping against passive play, off by default. Every frame in which
+ * both fighters are alive, each agent gets per_frame * w, where w is 1 when
+ * they are within near_dist of each other, 0 beyond far_dist, and linear in
+ * between. Both sides receive it, so rewards are no longer zero-sum. */
+void pf_vec_set_proximity_reward(pf_vec* vec, float per_frame, float near_dist, float far_dist);
 void pf_vec_step(pf_vec* vec, const int* actions, float* obs, float* rewards,
                  unsigned char* terminated, unsigned char* truncated, int* winners);
 

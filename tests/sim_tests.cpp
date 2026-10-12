@@ -688,6 +688,40 @@ static void testVecApiActions() {
     pf_vec_destroy(v);
 }
 
+static void testVecApiProximityReward() {
+    // Fighters spawn 6 apart and stand still.
+    int still[12] = {1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    const int size = pf_obs_size();
+    std::vector<float> obs(2 * size);
+    float rew[2];
+    unsigned char term = 0, trunc = 0;
+    int win = 0;
+    struct Case {
+        float per_frame, near_dist, far_dist, expect;
+    } cases[] = {
+        {0.0f, 2.0f, 8.0f, 0.0f},            // off by default
+        {0.001f, 2.0f, 8.0f, 0.001f / 3.0f},  // a third of the way in from far to near
+        {0.001f, 2.0f, 5.0f, 0.0f},           // beyond far
+        {0.001f, 7.0f, 9.0f, 0.001f},         // within near
+    };
+    for (const Case& c : cases) {
+        pf_vec* v = pf_vec_create(1, 3, 0, 1, 0);
+        pf_vec_set_proximity_reward(v, c.per_frame, c.near_dist, c.far_dist);
+        pf_vec_reset(v, obs.data());
+        pf_vec_step(v, still, obs.data(), rew, &term, &trunc, &win);
+        CHECK(near(rew[0], c.expect, 1e-6f));
+        CHECK(near(rew[1], c.expect, 1e-6f));
+        pf_vec_destroy(v);
+    }
+    // Frame skip sums it over the frames.
+    pf_vec* v = pf_vec_create(1, 3, 0, 4, 0);
+    pf_vec_set_proximity_reward(v, 0.001f, 7.0f, 9.0f);
+    pf_vec_reset(v, obs.data());
+    pf_vec_step(v, still, obs.data(), rew, &term, &trunc, &win);
+    CHECK(near(rew[0], 0.004f, 1e-6f));
+    pf_vec_destroy(v);
+}
+
 static void benchmark() {
     Game g;
     unsigned seed = 1;
@@ -735,6 +769,7 @@ int main() {
         {"bot match finishes", testBotMatchFinishes},
         {"batched API runs and resets", testVecApiRunsAndResets},
         {"batched API actions", testVecApiActions},
+        {"batched API proximity reward", testVecApiProximityReward},
     };
     for (auto& t : tests) {
         int before = g_failures;

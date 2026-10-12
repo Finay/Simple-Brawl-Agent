@@ -44,6 +44,10 @@ def parse_args():
     p.add_argument("--snapshot-every", type=int, default=50, help="mixed: updates between new snapshots")
     p.add_argument("--resample-every", type=int, default=10, help="mixed: updates between opponent reshuffles")
     p.add_argument("--latest-prob", type=float, default=0.3, help="mixed: chance a group gets the newest snapshot")
+    p.add_argument("--proximity-reward", type=float, default=1e-4,
+                   help="per-frame bonus for staying near the opponent; 0 = off")
+    p.add_argument("--proximity-near", type=float, default=2.0, help="distance for the full bonus")
+    p.add_argument("--proximity-far", type=float, default=8.0, help="distance where the bonus reaches zero")
     p.add_argument("--rollout", type=int, default=64, help="steps per env between updates")
     p.add_argument("--frame-skip", type=int, default=4, help="simulation frames per agent step")
     p.add_argument("--total-steps", type=int, default=300_000_000, help="agent steps to train for")
@@ -125,6 +129,12 @@ class Agent(nn.Module):
         return logp, entropy, self.value(obs).squeeze(1)
 
 
+def make_env(args, num_envs, opponent):
+    return VecPlatformFighter(num_envs, opponent=opponent, frame_skip=args.frame_skip,
+                              proximity_reward=args.proximity_reward, proximity_near=args.proximity_near,
+                              proximity_far=args.proximity_far)
+
+
 def to_device(array, device):
     # The env's arrays are views of buffers the next step overwrites, so always copy.
     return torch.from_numpy(array).to(device, copy=True)
@@ -162,7 +172,7 @@ class SimpleArena:
 
     def __init__(self, args, device):
         self.device = device
-        self.env = VecPlatformFighter(args.num_envs, opponent=args.opponent, frame_skip=args.frame_skip)
+        self.env = make_env(args, args.num_envs, args.opponent)
         self.agents = self.env.num_agents
         self.obs_size = self.env.obs_size
         self.batch = self.env.num_envs * self.agents
@@ -215,8 +225,8 @@ class MixedArena:
         if args.pool_envs % (2 * args.pool_groups) != 0:
             raise ValueError("--pool-envs must be a multiple of 2 * --pool-groups")
         self.args, self.device = args, device
-        self.bot_env = VecPlatformFighter(args.bot_envs, opponent="bot", frame_skip=args.frame_skip)
-        self.pool_env = VecPlatformFighter(args.pool_envs, opponent="self", frame_skip=args.frame_skip)
+        self.bot_env = make_env(args, args.bot_envs, "bot")
+        self.pool_env = make_env(args, args.pool_envs, "self")
         self.obs_size = self.bot_env.obs_size
         self.batch = args.bot_envs + args.pool_envs
         self.kinds = ["bot"] * args.bot_envs + ["pool"] * args.pool_envs

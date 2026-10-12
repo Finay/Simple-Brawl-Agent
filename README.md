@@ -81,6 +81,7 @@ obs, rewards, terminated, truncated, winners = env.step(actions)   # actions: (2
 - **Action:** six integers per agent, a MultiDiscrete `[3, 2, 2, 2, 2, 2]`: move (0 left, 1 none, 2 right), jump, down, light, heavy, shield. Each step's buttons count as new presses.
 - **Observation:** 49 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Not mirrored for player 2.
 - **Reward:** (damage dealt − damage taken) / 100, +1 per stock taken, −1 per stock lost.
+- **Proximity shaping (optional):** `proximity_reward=c` gives each agent `c` per frame while the fighters are within 2 units of each other, fading to zero at 8, to discourage passive play. Off by default here; `train_ppo.py` uses `1e-4`. With it on, rewards are not zero-sum.
 - **Episode end:** `terminated` when a player runs out of stocks, `truncated` on the time limit. Matches reset automatically.
 - **Self-play:** `opponent="self"` gives two agents per match; shapes gain an agent axis, e.g. observations `(N, 2, 49)`.
 - **Arrays:** numpy views when numpy is installed, ctypes arrays otherwise. They are overwritten by the next step.
