@@ -32,6 +32,8 @@ struct Color {
 const Color kPlayerColor[kNumPlayers] = {{1.0f, 1.0f, 1.0f}, {0.45f, 0.9f, 1.0f}};
 const Color kStageColor = {0.8f, 0.8f, 0.8f};
 const Color kBlastColor = {0.22f, 0.22f, 0.22f};
+const Color kWindupColor = {1.0f, 0.85f, 0.1f};
+const Color kActiveColor = {1.0f, 0.2f, 0.15f};
 
 // World region that is always visible; it contains the whole blast zone.
 const float kViewW = 30.0f, kViewH = 22.5f, kViewCx = 0.0f, kViewCy = 2.25f;
@@ -178,10 +180,6 @@ std::vector<Stroke> glyph(char ch) {
         case 'N': s = {{0, 0, 0, 6}, {0, 6, 4, 0}, {4, 0, 4, 6}}; break;
         case 'W': s = {{0, 6, 1, 0}, {1, 0, 2, 3}, {2, 3, 3, 0}, {3, 0, 4, 6}}; break;
         case 'D': s = {{0, 0, 0, 6}, {0, 6, 3, 6}, {3, 6, 4, 4}, {4, 4, 4, 2}, {4, 2, 3, 0}, {3, 0, 0, 0}}; break;
-        case '%':
-            s = {{0, 0, 4, 6}, {0, 6, 1, 6}, {1, 6, 1, 5}, {1, 5, 0, 5}, {0, 5, 0, 6},
-                 {3, 1, 4, 1}, {4, 1, 4, 0}, {4, 0, 3, 0}, {3, 0, 3, 1}};
-            break;
         default: break;
     }
     return s;
@@ -211,7 +209,7 @@ void drawScene(LineBatch& b, const Game& game) {
     Vec2 corners[4] = {{bz.x0, bz.y0}, {bz.x1, bz.y0}, {bz.x1, bz.y1}, {bz.x0, bz.y1}};
     for (int i = 0; i < 4; ++i) b.dashed(corners[i], corners[(i + 1) % 4], kBlastColor, 0.4f);
 
-    b.loop(rectPoly(st.solid), kStageColor);
+    b.loop(st.solid, kStageColor);
     for (const SoftPlatform& sp : st.soft) b.line({sp.x0, sp.y}, {sp.x1, sp.y}, kStageColor);
 
     for (int p = 0; p < kNumPlayers; ++p) {
@@ -220,16 +218,18 @@ void drawScene(LineBatch& b, const Game& game) {
         bool blink = c.invuln > 0 && (s.frame / 4) % 2 == 0;
         Color col = blink ? dim(kPlayerColor[p], 0.4f) : kPlayerColor[p];
         b.loop(game.body(p), col);
-        Poly hitbox;
-        if (game.activeHitbox(p, hitbox)) b.loop(hitbox, col);
+        Poly shape;
+        if (game.shield(p, shape)) b.loop(shape, col);
+        if (game.windupHitbox(p, shape)) b.loop(shape, kWindupColor);
+        if (game.activeHitbox(p, shape)) b.loop(shape, kActiveColor);
     }
 
-    // HUD: damage percent and remaining stocks, below the stage.
+    // HUD: damage and remaining stocks, below the stage.
     for (int p = 0; p < kNumPlayers; ++p) {
         const Character& c = s.ch[p];
-        std::string pct = std::to_string(static_cast<int>(std::lround(c.damage))) + "%";
-        float x = p == 0 ? -8.0f : 8.0f - textWidth("000%", 1.1f);
-        drawText(b, pct, {x, -7.4f}, 1.1f, kPlayerColor[p]);
+        std::string dmg = std::to_string(static_cast<int>(std::lround(c.damage)));
+        float x = p == 0 ? -8.0f : 8.0f - textWidth("000", 1.1f);
+        drawText(b, dmg, {x, -7.4f}, 1.1f, kPlayerColor[p]);
         Poly icon = Game::bodyAt({0.0f, 0.0f}, p == 0 ? 1 : -1);
         for (int k = 0; k < c.stocks; ++k) {
             Poly small;
@@ -284,12 +284,14 @@ Input keyboardInput(GLFWwindow* w, int player) {
         in.down = key(GLFW_KEY_S);
         in.light = key(GLFW_KEY_F);
         in.heavy = key(GLFW_KEY_G);
+        in.shield = key(GLFW_KEY_H);
     } else {
         in.move_x = (key(GLFW_KEY_RIGHT) ? 1 : 0) - (key(GLFW_KEY_LEFT) ? 1 : 0);
         in.jump = key(GLFW_KEY_UP);
         in.down = key(GLFW_KEY_DOWN);
         in.light = key(GLFW_KEY_COMMA);
         in.heavy = key(GLFW_KEY_PERIOD);
+        in.shield = key(GLFW_KEY_SLASH);
     }
     return in;
 }
@@ -319,10 +321,10 @@ bool writeBmp(const std::string& path, int w, int h, const std::vector<unsigned 
 void usage() {
     std::puts(
         "pf_play [--p1 human|bot|idle] [--p2 human|bot|idle]\n"
-        "        [--screenshot out.bmp --frames N [--wait-hitbox]]\n"
+        "        [--screenshot out.bmp --frames N [--wait hitbox|windup|shield]]\n"
         "\n"
-        "P1: A/D move, W jump, S down, F light, G heavy\n"
-        "P2: arrows move/jump/down, comma light, period heavy\n"
+        "P1: A/D move, W jump, S down, F light, G heavy, H shield\n"
+        "P2: arrows move/jump/down, comma light, period heavy, slash shield\n"
         "R restart, Esc quit");
 }
 
@@ -332,7 +334,7 @@ int main(int argc, char** argv) {
     Controller ctl[kNumPlayers] = {Controller::Human, Controller::Bot};
     std::string shot;
     int shot_frames = 0;
-    bool wait_hitbox = false;
+    std::string wait_for;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         bool has_value = i + 1 < argc;
@@ -344,8 +346,8 @@ int main(int argc, char** argv) {
             shot = argv[++i];
         } else if (a == "--frames" && has_value) {
             shot_frames = std::atoi(argv[++i]);
-        } else if (a == "--wait-hitbox") {
-            wait_hitbox = true;
+        } else if (a == "--wait" && has_value) {
+            wait_for = argv[++i];
         } else {
             usage();
             return a == "--help" ? 0 : 1;
@@ -388,10 +390,21 @@ int main(int argc, char** argv) {
 
     if (!shot.empty()) {
         for (int f = 0; f < shot_frames; ++f) stepOnce();
-        Poly hb;
-        for (int f = 0; wait_hitbox && f < 20000 && !game.activeHitbox(0, hb) && !game.activeHitbox(1, hb); ++f) {
-            stepOnce();
-        }
+        // Optionally keep going until the scene shows the thing being checked.
+        auto showing = [&] {
+            for (int p = 0; p < kNumPlayers; ++p) {
+                const Character& c = game.state().ch[p];
+                Poly shape;
+                if (wait_for == "hitbox" && game.activeHitbox(p, shape)) return true;
+                if (wait_for == "shield" && game.shield(p, shape)) return true;
+                if (wait_for == "windup" && game.windupHitbox(p, shape) &&
+                    c.timer * 2 >= moveData(c.move).startup && c.timer >= 4) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        for (int f = 0; !wait_for.empty() && f < 20000 && !showing(); ++f) stepOnce();
         render(window, batch, game);
         glFinish();
         int w = 0, h = 0;

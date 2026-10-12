@@ -42,6 +42,17 @@ constexpr int kRespawnInvuln = 120;
 constexpr float kPlatformSnap = 0.01f;
 constexpr float kPushSpeed = 3.0f;
 
+constexpr float kShieldMax = 50.0f;
+constexpr float kShieldDrain = 0.2f;        // per frame while held
+constexpr float kShieldRegen = 0.1f;        // per frame while down
+constexpr float kShieldDamageScale = 1.2f;  // shield health lost per point blocked
+constexpr float kShieldRadiusMax = 0.9f;
+constexpr float kShieldRadiusMin = 0.45f;
+constexpr float kShieldCenterY = (kTriHeight - kRadius) / 2.0f;
+constexpr float kShieldPush = 3.0f;
+constexpr int kShieldDropLag = 5;
+constexpr int kShieldBreakStun = 100;
+
 Poly poly(std::initializer_list<Vec2> pts) {
     Poly p;
     for (Vec2 v : pts) p.push(v);
@@ -76,22 +87,24 @@ const std::array<Move, kNumMoves> kMoves = {{
     {"down spike", 5,  6, 12,  7.0f, 6.0f, 0.08f, -80.0f,
      poly({{-0.3f, -0.5f}, {0.3f, -0.5f}, {0.0f, -1.4f}}),
      1.0f, 1.0f, false, 0.0f, false},
-    {"smash",     12,  4, 22, 14.0f, 9.0f, 0.16f, 40.0f,
+    {"smash",     16,  4, 22, 14.0f, 9.0f, 0.16f, 40.0f,
      poly({{0.5f, 0.9f}, {0.5f, -0.3f}, {2.1f, 0.3f}}),
      1.0f, 1.0f, false, 0.0f, false},
-    {"sweep",      7,  6, 18,  9.0f, 8.0f, 0.10f, 70.0f,
-     poly({{0.4f, -0.5f}, {1.8f, -0.5f}, {1.8f, -0.15f}, {0.4f, 0.1f}}),
+    {"sweep",     10,  6, 18,  9.0f, 8.0f, 0.10f, 70.0f,
+     poly({{0.4f, 0.1f}, {0.4f, -0.5f}, {1.8f, -0.5f}, {1.8f, -0.15f}}),
      0.15f, 1.0f, false, 0.0f, false},
-    {"uppercut",   4, 10, 16,  8.0f, 8.0f, 0.11f, 80.0f,
+    {"uppercut",  12, 10, 16,  8.0f, 8.0f, 0.11f, 80.0f,
      poly({{-0.6f, 0.6f}, {0.6f, 0.6f}, {0.9f, 1.5f}, {0.0f, 2.0f}, {-0.9f, 1.5f}}),
      1.0f, 1.0f, true, 13.0f, false},
-    {"dive",       6, 45, 14, 10.0f, 8.0f, 0.12f, 55.0f,
+    {"dive",       8, 45, 14, 10.0f, 8.0f, 0.12f, 55.0f,
      poly({{-0.45f, -0.5f}, {0.45f, -0.5f}, {0.0f, -1.5f}}),
      1.0f, 0.3f, true, -kDiveSpeed, true},
 }};
 
 const Stage kStage = {
-    {-6.0f, -1.2f, 6.0f, 0.0f},
+    poly({{-6.0f, 0.0f}, {-4.8f, -1.2f}, {4.8f, -1.2f}, {6.0f, 0.0f}}),
+    -6.0f,
+    6.0f,
     {{{-4.5f, -1.5f, 2.2f}, {1.5f, 4.5f, 2.2f}, {-1.5f, 1.5f, 4.4f}}},
     {-14.0f, -8.0f, 14.0f, 12.5f},
 };
@@ -107,6 +120,18 @@ bool hitboxOut(const Character& c) {
     if (c.action != Action::Attack) return false;
     const Move& m = kMoves[c.move];
     return c.timer >= m.startup && c.timer < m.startup + m.active;
+}
+
+// The move's hitbox in world space, scaled about the midpoint of its base edge.
+Poly worldHitbox(const Character& c, float scale) {
+    const Poly& local = kMoves[c.move].hitbox;
+    Vec2 base = (local.v[0] + local.v[1]) * 0.5f;
+    Poly out;
+    for (int i = 0; i < local.n; ++i) {
+        Vec2 v = base + (local.v[i] - base) * scale;
+        out.push({c.pos.x + v.x * static_cast<float>(c.facing), c.pos.y + v.y});
+    }
+    return out;
 }
 
 }  // namespace
@@ -126,6 +151,7 @@ void Game::reset() {
         c.grounded = true;
         c.air_jumps = kAirJumps;
         c.stocks = cfg_.stocks;
+        c.shield_hp = kShieldMax;
     }
 }
 
@@ -148,12 +174,36 @@ Poly Game::body(int player) const {
 bool Game::activeHitbox(int player, Poly& out) const {
     const Character& c = s_.ch[player];
     if (!hitboxOut(c)) return false;
-    const Poly& local = kMoves[c.move].hitbox;
+    out = worldHitbox(c, 1.0f);
+    return true;
+}
+
+bool Game::windupHitbox(int player, Poly& out) const {
+    const Character& c = s_.ch[player];
+    if (c.action != Action::Attack) return false;
+    const Move& m = kMoves[c.move];
+    if (c.timer >= m.startup) return false;
+    out = worldHitbox(c, static_cast<float>(c.timer + 1) / static_cast<float>(m.startup));
+    return true;
+}
+
+bool Game::shield(int player, Poly& out) const {
+    const Character& c = s_.ch[player];
+    if (c.action != Action::Shield) return false;
+    float strength = std::clamp(c.shield_hp / kShieldMax, 0.0f, 1.0f);
+    float r = kShieldRadiusMin + (kShieldRadiusMax - kShieldRadiusMin) * strength;
     out = Poly{};
-    for (int i = 0; i < local.n; ++i) {
-        out.push({c.pos.x + local.v[i].x * static_cast<float>(c.facing), c.pos.y + local.v[i].y});
+    for (int k = 0; k < Poly::kMax; ++k) {
+        float a = 2.0f * kPi * static_cast<float>(k) / Poly::kMax;
+        out.push({c.pos.x + r * std::cos(a), c.pos.y + kShieldCenterY + r * std::sin(a)});
     }
     return true;
+}
+
+void Game::breakShield(Character& c) {
+    c.action = Action::Lag;
+    c.timer = kShieldBreakStun;
+    c.shield_hp = kShieldMax * 0.3f;
 }
 
 MoveState Game::moveState(int player, const Input& in) const {
@@ -196,6 +246,7 @@ void Game::advanceAttack(Character& c) {
 
 void Game::control(Character& c, const Input& in) {
     if (c.invuln > 0) --c.invuln;
+    if (c.action != Action::Shield) c.shield_hp = std::min(kShieldMax, c.shield_hp + kShieldRegen);
     bool jump = in.jump && !c.prev.jump;
     bool down = in.down && !c.prev.down;
     bool light = in.light && !c.prev.light;
@@ -211,7 +262,9 @@ void Game::control(Character& c, const Input& in) {
             break;
         case Action::Free:
             if (in.move_x != 0) c.facing = in.move_x;
-            if (heavy || light) {
+            if (in.shield && c.grounded) {
+                c.action = Action::Shield;
+            } else if (heavy || light) {
                 startAttack(c, in, heavy);
             } else if (jump) {
                 if (c.grounded) {
@@ -225,6 +278,19 @@ void Game::control(Character& c, const Input& in) {
             } else if (down && !c.grounded && c.vel.y <= 0.0f) {
                 c.fastfall = true;
                 c.vel.y = -kFastFall;
+            }
+            break;
+        case Action::Shield:
+            if (jump) {
+                c.action = Action::Free;
+                c.vel.y = kJumpSpeed;
+                c.grounded = false;
+            } else if (!in.shield || !c.grounded) {
+                c.action = Action::Lag;
+                c.timer = kShieldDropLag;
+            } else {
+                c.shield_hp -= kShieldDrain;
+                if (c.shield_hp <= 0.0f) breakShield(c);
             }
             break;
         case Action::Dead:
@@ -287,7 +353,7 @@ void Game::integrate(Character& c, const Input& in) {
 
     Vec2 normal;
     float depth = 0.0f;
-    if (penetration(bodyAt(c.pos, c.facing), rectPoly(kStage.solid), normal, depth)) {
+    if (penetration(bodyAt(c.pos, c.facing), kStage.solid, normal, depth)) {
         c.pos = c.pos + normal * depth;
         float into = dot(c.vel, normal);
         if (into < 0.0f) c.vel = c.vel - normal * into;
@@ -328,22 +394,37 @@ void Game::separate() {
 }
 
 void Game::resolveHits() {
-    std::array<bool, kNumPlayers> lands{};
+    enum class Outcome { Miss, Hit, Blocked };
+    std::array<Outcome, kNumPlayers> outcome{};
     for (int a = 0; a < kNumPlayers; ++a) {
         const Character& atk = s_.ch[a];
         const Character& tgt = s_.ch[1 - a];
-        Poly hitbox;
+        Poly hitbox, bubble;
         if (atk.attack_hit || !activeHitbox(a, hitbox)) continue;
         if (tgt.action == Action::Dead || tgt.invuln > 0) continue;
-        lands[a] = overlap(hitbox, body(1 - a));
+        // A hitbox touching the shield is blocked even if it also reaches the body.
+        if (shield(1 - a, bubble) && overlap(hitbox, bubble)) {
+            outcome[a] = Outcome::Blocked;
+        } else if (overlap(hitbox, body(1 - a))) {
+            outcome[a] = Outcome::Hit;
+        }
     }
     // Decide both hits before applying either, so simultaneous hits trade.
     std::array<Character, kNumPlayers> snapshot = s_.ch;
     for (int a = 0; a < kNumPlayers; ++a) {
-        if (!lands[a]) continue;
+        if (outcome[a] == Outcome::Miss) continue;
         const Character& atk = snapshot[a];
         const Move& m = kMoves[atk.move];
         Character& tgt = s_.ch[1 - a];
+        s_.ch[a].attack_hit = true;
+
+        if (outcome[a] == Outcome::Blocked) {
+            tgt.shield_hp -= m.damage * kShieldDamageScale;
+            tgt.vel.x += static_cast<float>(atk.facing) * kShieldPush;
+            s_.events.damage_blocked[1 - a] += m.damage;
+            if (tgt.shield_hp <= 0.0f) breakShield(tgt);
+            continue;
+        }
 
         tgt.damage += m.damage;
         float kb = m.base_kb + m.kb_scale * tgt.damage;
@@ -358,7 +439,6 @@ void Game::resolveHits() {
         tgt.move = kNoMove;
         tgt.grounded = false;
         tgt.fastfall = false;
-        s_.ch[a].attack_hit = true;
         s_.events.damage_taken[1 - a] += m.damage;
     }
 }
@@ -384,6 +464,7 @@ void Game::respawn(int player) {
     c.pos = {player == 0 ? -1.0f : 1.0f, 6.5f};
     c.facing = player == 0 ? 1 : -1;
     c.air_jumps = kAirJumps;
+    c.shield_hp = kShieldMax;
     c.invuln = kRespawnInvuln;
 }
 
@@ -448,8 +529,9 @@ void Game::observe(int player, float* out) const {
         out[i++] = c.grounded ? 1.0f : 0.0f;
         out[i++] = static_cast<float>(c.air_jumps);
         out[i++] = c.damage / 100.0f;
+        out[i++] = c.shield_hp / kShieldMax;
         out[i++] = static_cast<float>(c.stocks) / static_cast<float>(std::max(1, cfg_.stocks));
-        for (int a = 0; a < 5; ++a) out[i++] = static_cast<int>(c.action) == a ? 1.0f : 0.0f;
+        for (int a = 0; a < 6; ++a) out[i++] = static_cast<int>(c.action) == a ? 1.0f : 0.0f;
         out[i++] = static_cast<float>(c.move + 1) / static_cast<float>(kNumMoves);
         float phase = 0.0f;
         if (c.action == Action::Attack) {

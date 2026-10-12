@@ -16,6 +16,7 @@ pf::Input toInput(const int* a) {
     in.down = a[2] != 0;
     in.light = a[3] != 0;
     in.heavy = a[4] != 0;
+    in.shield = a[5] != 0;
     return in;
 }
 
@@ -33,7 +34,7 @@ void pf_destroy(pf_env* env) { delete env; }
 void pf_reset(pf_env* env) { env->game.reset(); }
 
 void pf_step(pf_env* env, const int* actions) {
-    pf::Input in[pf::kNumPlayers] = {toInput(actions), toInput(actions + 5)};
+    pf::Input in[pf::kNumPlayers] = {toInput(actions), toInput(actions + 6)};
     env->game.step(in);
 }
 
@@ -57,6 +58,7 @@ void pf_get_status(const pf_env* env, pf_status* out) {
         out->damage[p] = s.ch[p].damage;
         out->stocks[p] = s.ch[p].stocks;
         out->damage_taken[p] = s.events.damage_taken[p];
+        out->damage_blocked[p] = s.events.damage_blocked[p];
         out->ko[p] = s.events.ko[p] ? 1 : 0;
     }
 }

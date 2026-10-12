@@ -20,9 +20,10 @@ struct Input {
     bool down = false;  // fast-fall, and fall through soft platforms
     bool light = false;
     bool heavy = false;
+    bool shield = false;  // held, grounded only
 };
 
-enum class Action : uint8_t { Free, Attack, Hitstun, Lag, Dead };
+enum class Action : uint8_t { Free, Attack, Hitstun, Lag, Dead, Shield };
 
 // The movement state at the moment an attack button is pressed picks the move.
 enum class MoveState : uint8_t { Idle, Run, Rise, Fall };
@@ -42,14 +43,16 @@ enum MoveId : int8_t {
 
 struct Move {
     const char* name;
-    int startup;   // frames before the hitbox appears
+    int startup;   // wind-up frames before the hitbox appears; longer for larger hitboxes
     int active;    // frames the hitbox is out
     int recovery;  // frames after, unable to act
     float damage;
     float base_kb;    // launch speed at 0%
     float kb_scale;   // extra launch speed per 1% on the target
     float angle_deg;  // launch angle, 0 = forward, 90 = straight up
-    Poly hitbox;      // body-local, facing right
+    // Body-local, facing right. The first edge is the base on the body's side,
+    // which the wind-up outline grows out from.
+    Poly hitbox;
     float friction_scale;  // ground friction multiplier while attacking
     float vx_scale;        // applied to the user's vx when the hitbox appears
     bool sets_vy;
@@ -64,7 +67,8 @@ struct SoftPlatform {
 };
 
 struct Stage {
-    Rect solid;                         // main platform, solid from every side
+    Poly solid;                         // main platform, an inverted trapezoid, solid from every side
+    float left, right;                  // ends of its top surface
     std::array<SoftPlatform, 3> soft;   // land on from above, pass through otherwise
     Rect blast;                         // leaving this box loses a stock
 };
@@ -85,6 +89,7 @@ struct Character {
     bool up_used = false;  // uppercut spent until next landing
     int air_jumps = 0;
     float damage = 0.0f;
+    float shield_hp = 0.0f;
     int stocks = 0;
     Action action = Action::Free;
     int timer = 0;  // attack: frames elapsed; hitstun/lag/dead: frames left
@@ -97,6 +102,7 @@ struct Character {
 // What happened during the most recent step, for reward shaping.
 struct StepEvents {
     std::array<float, kNumPlayers> damage_taken{};
+    std::array<float, kNumPlayers> damage_blocked{};  // absorbed by this player's shield
     std::array<bool, kNumPlayers> ko{};
 };
 
@@ -110,7 +116,7 @@ struct State {
 
 class Game {
 public:
-    static constexpr int kObsSize = 41;
+    static constexpr int kObsSize = 45;
 
     explicit Game(Config cfg = {});
 
@@ -128,6 +134,14 @@ public:
     // The attack polygon, only while it can actually hit.
     bool activeHitbox(int player, Poly& out) const;
 
+    // During an attack's wind-up: the hitbox outline growing out from its base
+    // to full size. It cannot hit; it shows what is coming.
+    bool windupHitbox(int player, Poly& out) const;
+
+    // The shield bubble while it is up. Attacks that touch it are blocked.
+    // It shrinks as it weakens, exposing the parts of the body outside it.
+    bool shield(int player, Poly& out) const;
+
     MoveState moveState(int player, const Input& in) const;
 
     // Fixed-size feature vector from one player's point of view.
@@ -139,6 +153,7 @@ private:
     void startAttack(Character& c, const Input& in, bool heavy);
     void advanceAttack(Character& c);
     void land(Character& c);
+    void breakShield(Character& c);
     void separate();
     void resolveHits();
     void checkBlast(int player);

@@ -14,6 +14,7 @@ typedef struct pf_status {
     float damage[2];
     int stocks[2];
     float damage_taken[2]; /* during the most recent step */
+    float damage_blocked[2]; /* absorbed by this player's shield during the most recent step */
     int ko[2];             /* lost a stock during the most recent step */
 } pf_status;
 
@@ -22,7 +23,7 @@ pf_env* pf_create(int stocks, int max_frames);
 void pf_destroy(pf_env* env);
 void pf_reset(pf_env* env);
 
-/* actions: 10 ints, 5 per player: move_x (-1/0/1), jump, down, light, heavy. */
+/* actions: 12 ints, 6 per player: move_x (-1/0/1), jump, down, light, heavy, shield. */
 void pf_step(pf_env* env, const int* actions);
 
 /* Like pf_step for one player, with the scripted bot controlling the other. */

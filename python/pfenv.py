@@ -2,7 +2,7 @@
 
 Build the shared library first with `make sim` from the project root.
 
-An action is a sequence of five ints: (move_x, jump, down, light, heavy),
+An action is a sequence of six ints: (move_x, jump, down, light, heavy, shield),
 where move_x is -1, 0 or 1 and the rest are 0 or 1.
 """
 import ctypes
@@ -21,6 +21,7 @@ class _Status(ctypes.Structure):
         ("damage", ctypes.c_float * 2),
         ("stocks", ctypes.c_int * 2),
         ("damage_taken", ctypes.c_float * 2),
+        ("damage_blocked", ctypes.c_float * 2),
         ("ko", ctypes.c_int * 2),
     ]
 
@@ -46,7 +47,7 @@ class PlatformFighterEnv:
     fraction of 100%), plus 1 for taking a stock and minus 1 for losing one.
     """
 
-    ACTION_SIZE = 5
+    ACTION_SIZE = 6
 
     def __init__(self, stocks=3, max_frames=60 * 60 * 3, lib_path=None):
         self._lib = _load(lib_path)
@@ -70,13 +71,13 @@ class PlatformFighterEnv:
 
     def step(self, action0, action1):
         """Advance one frame (1/60 s) with both players' actions."""
-        acts = (ctypes.c_int * 10)(*action0, *action1)
+        acts = (ctypes.c_int * 12)(*action0, *action1)
         self._lib.pf_step(self._env, acts)
         return self._result()
 
     def step_vs_bot(self, action, player=0):
         """Advance one frame with the scripted bot playing the other side."""
-        acts = (ctypes.c_int * 5)(*action)
+        acts = (ctypes.c_int * 6)(*action)
         self._lib.pf_step_vs_bot(self._env, player, acts)
         return self._result()
 
@@ -106,7 +107,8 @@ if __name__ == "__main__":
     steps, total, t0 = 0, 0.0, time.perf_counter()
     done, info = False, {}
     while not done:
-        action = (rng.choice((-1, 0, 1)), rng.random() < 0.1, 0, rng.random() < 0.15, rng.random() < 0.05)
+        action = (rng.choice((-1, 0, 1)), rng.random() < 0.1, 0, rng.random() < 0.15,
+                  rng.random() < 0.05, rng.random() < 0.05)
         (_obs0, _obs1), rewards, done, info = env.step_vs_bot([int(a) for a in action])
         total += rewards[0]
         steps += 1

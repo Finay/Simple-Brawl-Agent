@@ -130,7 +130,7 @@ static void testKnockbackGrowsWithDamage() {
         press.heavy = true;
         Input in[2] = {press, {}};
         speed[i] = 0.0f;
-        for (int f = 0; f < 20 && speed[i] == 0.0f; ++f) {
+        for (int f = 0; f < 30 && speed[i] == 0.0f; ++f) {
             g.step(in);
             const Character& t = g.state().ch[1];
             if (t.action == Action::Hitstun) speed[i] = std::hypot(t.vel.x, t.vel.y);
@@ -200,7 +200,7 @@ static void testUppercutOncePerAirtime() {
     h.heavy = true;
     run(g, h, {}, 1);
     CHECK(g.state().ch[0].move == kHeavyRise);
-    run(g, {}, {}, 5);
+    run(g, {}, {}, moveData(kHeavyRise).startup);
     CHECK(g.state().ch[0].vel.y > 8.0f);  // lifted by the move
     // Wait out the move, jump again to be rising, and try a second one.
     while (g.state().ch[0].action != Action::Free) run(g, {}, {}, 1);
@@ -224,6 +224,152 @@ static void testOverlappingBodiesSeparate() {
     place(h, 1, 0.0f, 0.5f, -1, true);
     run(h, {}, {}, 4);
     CHECK(h.state().ch[1].pos.x == 0.0f);
+}
+
+static float boundsArea(const Poly& p) {
+    Rect b = bounds(p);
+    return (b.x1 - b.x0) * (b.y1 - b.y0);
+}
+
+static void testWindupGrowsThenTurnsActive() {
+    Game g;
+    place(g, 1, 5.0f, 0.5f, -1, true);
+    int startup = moveData(kHeavyIdle).startup;
+    Input press;
+    press.heavy = true;
+    run(g, press, {}, 1);
+    Poly windup, active;
+    CHECK(g.windupHitbox(0, windup));
+    CHECK(!g.activeHitbox(0, active));
+    float first = boundsArea(windup);
+    run(g, {}, {}, startup / 2);
+    CHECK(g.windupHitbox(0, windup));
+    CHECK(boundsArea(windup) > first * 4.0f);
+    // The last wind-up frame is the full hitbox; the next frame it is live.
+    run(g, {}, {}, startup - 1 - startup / 2);
+    CHECK(g.windupHitbox(0, windup));
+    CHECK(!g.activeHitbox(0, active));
+    run(g, {}, {}, 1);
+    CHECK(g.activeHitbox(0, active));
+    Poly none;
+    CHECK(!g.windupHitbox(0, none));
+    CHECK(near(boundsArea(windup), boundsArea(active), 1e-4f));
+    CHECK(near(bounds(windup).x1, bounds(active).x1, 1e-4f));
+}
+
+static void testLargerHitboxesWindUpLonger() {
+    for (int id = 0; id < kNumMoves; ++id) {
+        const Move& m = moveData(id);
+        float twice_area = 0.0f;
+        for (int i = 0; i < m.hitbox.n; ++i) {
+            Vec2 a = m.hitbox.v[i], b = m.hitbox.v[(i + 1) % m.hitbox.n];
+            twice_area += a.x * b.y - b.x * a.y;
+        }
+        float area = std::fabs(twice_area) / 2.0f;
+        if (area >= 0.4f) {
+            CHECK(m.startup >= 8);
+        } else {
+            CHECK(m.startup <= 5);
+        }
+    }
+}
+
+static void testShieldBlocks() {
+    Game g;
+    place(g, 0, 0.0f, 0.5f, 1, true);
+    place(g, 1, 1.2f, 0.5f, -1, true);
+    Input guard, press;
+    guard.shield = true;
+    press.light = true;
+    run(g, press, guard, 1);
+    Poly bubble;
+    CHECK(g.shield(1, bubble));
+    CHECK(bubble.n == 16);
+    float hp = g.state().ch[1].shield_hp;
+    float blocked = 0.0f;
+    for (int f = 0; f < 8; ++f) {
+        run(g, press, guard, 1);
+        blocked += g.state().events.damage_blocked[1];
+    }
+    CHECK(near(blocked, 3.0f));
+    CHECK(g.state().ch[1].damage == 0.0f);
+    CHECK(g.state().ch[1].action == Action::Shield);
+    CHECK(g.state().ch[1].shield_hp < hp - 3.0f);
+    // Releasing drops the shield after a short lag.
+    run(g, {}, {}, 1);
+    CHECK(!g.shield(1, bubble));
+    run(g, {}, {}, 10);
+    CHECK(g.state().ch[1].action == Action::Free);
+}
+
+static void testShieldOnlyOnGround() {
+    Game g;
+    place(g, 0, 0.0f, 3.0f, 1, false);
+    Input guard;
+    guard.shield = true;
+    run(g, guard, {}, 2);
+    Poly bubble;
+    CHECK(!g.shield(0, bubble));
+}
+
+static void testShieldShrinksAndBreaks() {
+    Game g;
+    Input guard;
+    guard.shield = true;
+    run(g, guard, {}, 1);
+    Poly bubble;
+    CHECK(g.shield(0, bubble));
+    float full = boundsArea(bubble);
+    run(g, guard, {}, 150);
+    CHECK(g.shield(0, bubble));
+    CHECK(boundsArea(bubble) < full * 0.6f);
+    run(g, guard, {}, 120);
+    CHECK(g.state().ch[0].action == Action::Lag);  // broken: stunned
+    CHECK(!g.shield(0, bubble));
+}
+
+static void testShrunkShieldLeavesBodyExposed() {
+    Game g;
+    place(g, 0, 0.0f, 0.5f, 1, true);
+    // Directly above the defender's apex, which leans to x = 0.21.
+    place(g, 1, 0.21f, 3.1f, -1, false);
+    g.mutableState().ch[0].shield_hp = 4.0f;
+    Input guard, press;
+    guard.shield = true;
+    press.light = true;  // falling: down spike, onto the apex above the small shield
+    run(g, guard, {}, 1);
+    run(g, guard, press, 1);
+    CHECK(g.state().ch[1].move == kLightFall);
+    float taken = 0.0f, blocked = 0.0f;
+    for (int f = 0; f < 30; ++f) {
+        run(g, guard, {}, 1);
+        taken += g.state().events.damage_taken[0];
+        blocked += g.state().events.damage_blocked[0];
+    }
+    CHECK(taken > 0.0f);
+    CHECK(blocked == 0.0f);
+}
+
+static void testStageIsInvertedTrapezoid() {
+    const Stage& st = stage();
+    CHECK(st.solid.n == 4);
+    Rect b = bounds(st.solid);
+    CHECK(b.x0 == st.left && b.x1 == st.right && b.y1 == 0.0f);
+    float bottom_lo = 1e9f, bottom_hi = -1e9f;
+    for (int i = 0; i < st.solid.n; ++i) {
+        if (st.solid.v[i].y != b.y0) continue;
+        bottom_lo = std::fmin(bottom_lo, st.solid.v[i].x);
+        bottom_hi = std::fmax(bottom_hi, st.solid.v[i].x);
+    }
+    CHECK(bottom_lo > st.left && bottom_hi < st.right);
+    // The top surface still reaches the corners.
+    Game g;
+    place(g, 0, 5.8f, 0.5f, 1, true);
+    run(g, {}, {}, 30);
+    CHECK(g.state().ch[0].grounded);
+    // Under the overhang is open space that a rectangle would have filled.
+    CHECK(!overlap(Game::bodyAt({6.2f, -1.0f}, 1), st.solid));
+    CHECK(overlap(Game::bodyAt({6.2f, -1.0f}, 1), rectPoly({st.left, b.y0, st.right, 0.0f})));
 }
 
 static void testGameEndsAndReportsWinner() {
@@ -257,6 +403,7 @@ static Input randomInput(unsigned& seed) {
     in.down = next() % 10 == 0;
     in.light = next() % 6 == 0;
     in.heavy = next() % 9 == 0;
+    in.shield = next() % 12 == 0;
     return in;
 }
 
@@ -332,6 +479,13 @@ int main() {
         {"walk-off loses a stock, respawns", testWalkOffLosesStockAndRespawns},
         {"uppercut once per airtime", testUppercutOncePerAirtime},
         {"overlapping bodies separate", testOverlappingBodiesSeparate},
+        {"wind-up grows, then turns active", testWindupGrowsThenTurnsActive},
+        {"larger hitboxes wind up longer", testLargerHitboxesWindUpLonger},
+        {"shield blocks", testShieldBlocks},
+        {"shield only on the ground", testShieldOnlyOnGround},
+        {"shield shrinks and breaks", testShieldShrinksAndBreaks},
+        {"shrunk shield leaves body exposed", testShrunkShieldLeavesBodyExposed},
+        {"stage is an inverted trapezoid", testStageIsInvertedTrapezoid},
         {"game end and winner", testGameEndsAndReportsWinner},
         {"deterministic and finite", testDeterministicAndFinite},
         {"bot match finishes", testBotMatchFinishes},

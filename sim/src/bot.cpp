@@ -20,7 +20,7 @@ Input botInput(const Game& game, int player) {
     bool strike = (h >> 13) % 3 == 0;
     auto sign = [](float v) { return v > 0.0f ? 1 : -1; };
 
-    bool off_stage = me.pos.x < st.solid.x0 || me.pos.x > st.solid.x1;
+    bool off_stage = me.pos.x < st.left || me.pos.x > st.right;
     if (off_stage) {
         in.move_x = -sign(me.pos.x);
         if (me.vel.y <= 0.0f && me.air_jumps > 0) {
@@ -39,12 +39,28 @@ Input botInput(const Game& game, int player) {
     float dx = opp.pos.x - me.pos.x;
     float dy = opp.pos.y - me.pos.y;
     float adx = std::fabs(dx);
-    bool opp_off_stage = opp.pos.x < st.solid.x0 || opp.pos.x > st.solid.x1;
-    bool at_edge = std::fabs(me.pos.x) > st.solid.x1 - 0.8f;
+    bool opp_off_stage = opp.pos.x < st.left || opp.pos.x > st.right;
+    bool at_edge = std::fabs(me.pos.x) > st.right - 0.8f;
 
     // Close in further while airborne, where the attacks reach up and down.
     float keep_away = me.grounded ? 1.0f : 0.3f;
     if (adx > keep_away && !(opp_off_stage && at_edge)) in.move_x = sign(dx);
+
+    // Sometimes shield a slow attack from its wind-up until its hitbox is gone.
+    // Whether it does is fixed for half a second at a time, so it mostly
+    // commits to the block or ignores the swing.
+    unsigned mood = static_cast<unsigned>(s.frame / 30) * 2246822519u + static_cast<unsigned>(player) * 97u;
+    bool wary = (mood >> 11) % 2 == 0;
+    bool threatened = false;
+    if (opp.action == Action::Attack && opp.move >= kHeavyIdle) {
+        const Move& m = moveData(opp.move);
+        threatened = opp.timer < m.startup + m.active && adx < 2.6f && std::fabs(dy) < 1.5f;
+    }
+    if (me.grounded && wary && threatened && me.shield_hp > 15.0f) {
+        Input guard;
+        guard.shield = true;
+        return guard;
+    }
 
     if (me.grounded) {
         if (std::fabs(dy) < 1.0f && adx < 1.7f) {
