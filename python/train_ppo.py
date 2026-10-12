@@ -12,8 +12,10 @@ Build the simulation first with `make sim`.
 """
 import argparse
 import collections
+import glob
 import os
 import random
+import shutil
 import sys
 import time
 
@@ -40,7 +42,10 @@ def parse_args():
     p.add_argument("--pool-envs", type=int, default=768, help="mixed: matches against frozen checkpoints")
     p.add_argument("--pool-groups", type=int, default=8, help="mixed: frozen opponents in play at once")
     p.add_argument("--pool-max", type=int, default=40, help="mixed: snapshots kept")
-    p.add_argument("--pool-init", nargs="*", default=[], help="mixed: checkpoints to seed the pool with")
+    p.add_argument("--pool-init", nargs="*", default=[],
+                   help="mixed: checkpoints, or directories of them, to seed the pool with")
+    p.add_argument("--pool-dir", default=None,
+                   help="mixed: where the current pool is mirrored on disk (default pools/ppo-<run>)")
     p.add_argument("--snapshot-every", type=int, default=50, help="mixed: updates between new snapshots")
     p.add_argument("--resample-every", type=int, default=10, help="mixed: updates between opponent reshuffles")
     p.add_argument("--latest-prob", type=float, default=0.3, help="mixed: chance a group gets the newest snapshot")
@@ -67,8 +72,11 @@ def parse_args():
     p.add_argument("--device", default="auto")
     p.add_argument("--eval-every", type=int, default=25, help="updates between bot evaluations (self-play only)")
     p.add_argument("--eval-envs", type=int, default=256)
-    p.add_argument("--checkpoint-dir", default="checkpoints")
-    p.add_argument("--checkpoint-every", type=int, default=100, help="updates between checkpoints")
+    p.add_argument("--checkpoint-dir", default="checkpoints",
+                   help="the learner's checkpoints go in <dir>/ppo-<run>/, apart from the opponent pool")
+    p.add_argument("--checkpoint-every", type=int, default=100, help="updates between saves of latest.pt")
+    p.add_argument("--milestone-every", type=int, default=1000,
+                   help="updates between kept copies (update-NNNNNN.pt); 0 = none")
     p.add_argument("--wandb-entity", default="kianbenner")
     p.add_argument("--wandb-project", default="pf-agent")
     p.add_argument("--run-name", default=None)
@@ -187,7 +195,7 @@ class SimpleArena:
         won = torch.from_numpy(winners).to(self.device).repeat_interleave(self.agents) == self.player
         return obs, reward, done.repeat_interleave(self.agents), won
 
-    def after_update(self, update, agent):
+    def after_update(self, update, agent, make_checkpoint):
         return {}
 
 
@@ -234,14 +242,33 @@ class MixedArena:
         self.side = self.rows % 2  # which player the learner controls in each pool match
         self.opponents = FrozenOpponents(args.pool_groups, self.obs_size, args.hidden, device)
         self.pool = []
+        self.files = []  # the pool mirrored on disk, one checkpoint file per entry
+        self.pool_dir = None
+        self.added = 0
         self.opp_obs = None
         self.rng = random.Random(args.seed)
 
-    def add_snapshot(self, policy_state):
+    def add_snapshot(self, policy_state, checkpoint, label):
+        """policy_state: the policy network's weights. checkpoint: a full
+        checkpoint dict, or the path of one, written to the pool directory so
+        the pool can seed a later run."""
         self.pool.append({k: v.detach().clone() for k, v in policy_state.items()})
+        path = None
+        if self.pool_dir:
+            path = os.path.join(self.pool_dir, f"{self.added:04d}-{label}.pt")
+            if isinstance(checkpoint, str):
+                shutil.copyfile(checkpoint, path)
+            else:
+                torch.save(checkpoint, path)
+        self.files.append(path)
+        self.added += 1
         if len(self.pool) > self.args.pool_max:
             # Keep the oldest entry as a fixed reference; drop a random middle one.
-            self.pool.pop(self.rng.randrange(1, len(self.pool) - 1))
+            drop = self.rng.randrange(1, len(self.pool) - 1)
+            self.pool.pop(drop)
+            dropped = self.files.pop(drop)
+            if dropped and os.path.exists(dropped):
+                os.remove(dropped)
 
     def resample(self):
         for group in range(self.args.pool_groups):
@@ -275,9 +302,9 @@ class MixedArena:
         return (torch.cat([bot_obs, mine]), torch.cat([bot_reward, my_reward]),
                 torch.cat([bot_done, pool_done]), won)
 
-    def after_update(self, update, agent):
+    def after_update(self, update, agent, make_checkpoint):
         if update % self.args.snapshot_every == 0:
-            self.add_snapshot(agent.policy.state_dict())
+            self.add_snapshot(agent.policy.state_dict(), make_checkpoint(), f"update-{update:06d}")
         if update % self.args.resample_every == 0:
             self.resample()
         return {"charts/pool_size": len(self.pool)}
@@ -302,13 +329,6 @@ def main():
     agent = Agent(obs_size, args.hidden).to(device)
     if args.init:
         agent.load_state_dict(torch.load(args.init, map_location=device)["model"])
-    if args.opponent == "mixed":
-        for path in args.pool_init:
-            model = torch.load(path, map_location=device)["model"]
-            arena.add_snapshot({k[len("policy."):]: v for k, v in model.items() if k.startswith("policy.")})
-        if not arena.pool:
-            arena.add_snapshot(agent.policy.state_dict())
-        arena.resample()
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr, eps=1e-5)
 
     run = None
@@ -316,13 +336,38 @@ def main():
         import wandb
         run = wandb.init(entity=args.wandb_entity, project=args.wandb_project, name=args.run_name,
                          config=vars(args))
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
     tag = run.id if run else time.strftime("%Y%m%d-%H%M%S")
-    latest_path = os.path.join(args.checkpoint_dir, f"ppo-{tag}-latest.pt")
+    # The learner's own checkpoints live here, separate from the opponent pool,
+    # whose files come and go as snapshots are replaced.
+    run_dir = os.path.join(args.checkpoint_dir, f"ppo-{tag}")
+    os.makedirs(run_dir, exist_ok=True)
+    latest_path = os.path.join(run_dir, "latest.pt")
+
+    def checkpoint(steps):
+        return {"model": agent.state_dict(), "args": vars(args), "obs_size": obs_size,
+                "hidden": args.hidden, "steps": steps}
 
     def save(path, steps):
-        torch.save({"model": agent.state_dict(), "args": vars(args), "obs_size": obs_size,
-                    "hidden": args.hidden, "steps": steps}, path)
+        torch.save(checkpoint(steps), path)
+
+    if args.opponent == "mixed":
+        arena.pool_dir = args.pool_dir or os.path.join("pools", f"ppo-{tag}")
+        os.makedirs(arena.pool_dir, exist_ok=True)
+        seeds = []
+        for entry in args.pool_init:
+            seeds += sorted(glob.glob(os.path.join(entry, "*.pt"))) if os.path.isdir(entry) else [entry]
+        for path in seeds:
+            model = torch.load(path, map_location=device)["model"]
+            policy = {k[len("policy."):]: v for k, v in model.items() if k.startswith("policy.")}
+            name = os.path.splitext(os.path.basename(path))[0]
+            # Drop a pool file's own numeric prefix so names do not pile up prefixes.
+            name = name.split("-", 1)[1] if name[:4].isdigit() and "-" in name else name
+            arena.add_snapshot(policy, path, f"seed-{name}")
+        if not arena.pool:
+            arena.add_snapshot(agent.policy.state_dict(), checkpoint(0), "init")
+        arena.resample()
+        print(f"pool: {len(arena.pool)} seed(s), mirrored in {arena.pool_dir}", flush=True)
+    print(f"learner checkpoints in {run_dir}", flush=True)
 
     print(f"device {device} ({torch.cuda.get_device_name(0) if device.type == 'cuda' else 'cpu'}), "
           f"opponent {args.opponent}, {batch} learner rows, {steps_per_update} steps/update, "
@@ -443,7 +488,7 @@ def main():
             win_rate, played = evaluate_vs_bot(agent, eval_env, device, args.eval_envs)
             log["charts/win_rate_vs_bot"] = win_rate
             log["charts/eval_episodes"] = played
-        log.update(arena.after_update(update, agent))
+        log.update(arena.after_update(update, agent, lambda: checkpoint(global_step)))
         if run:
             run.log(log, step=global_step)
         if update % 10 == 0 or update == 1 or update == num_updates:
@@ -455,6 +500,8 @@ def main():
         out_of_time = args.time_limit_min > 0 and elapsed > args.time_limit_min * 60
         if update % args.checkpoint_every == 0 or update == num_updates or out_of_time:
             save(latest_path, global_step)
+        if args.milestone_every > 0 and update % args.milestone_every == 0:
+            save(os.path.join(run_dir, f"update-{update:06d}.pt"), global_step)
         if out_of_time:
             print(f"time limit reached after {update} updates", flush=True)
             break

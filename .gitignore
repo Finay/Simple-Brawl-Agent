@@ -2,11 +2,13 @@ __pycache__/
 *.pyc
 .venv/
 .ipynb_checkpoints/
+pools/
 .DS_Store
 .idea/
 
 # training outputs
 checkpoints/
+pools/
 runs/
 *.pt
 *.zip
