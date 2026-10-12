@@ -31,11 +31,11 @@ enum class MoveState : uint8_t { Idle, Run, Rise, Fall };
 enum MoveId : int8_t {
     kNoMove = -1,
     kLightIdle,  // jab
-    kLightRun,   // dash poke
+    kLightRun,   // dash poke: stop, then lunge forward
     kLightRise,  // up spike
     kLightFall,  // down spike
     kHeavyIdle,  // smash
-    kHeavyRun,   // sweep
+    kHeavyRun,   // sweep: stop, then lunge forward
     kHeavyRise,  // uppercut, once per airtime, lifts the user
     kHeavyFall,  // dive, active until landing
     kNumMoves,
@@ -58,6 +58,8 @@ struct Move {
     bool sets_vy;
     float vy_set;      // user's vy when the hitbox appears, if sets_vy
     bool until_land;   // hitbox stays out until landing (at most `active` frames)
+    bool pause;        // the user stops dead for the wind-up
+    float lunge;       // then is thrust forward at this speed when the hitbox appears
 };
 
 const Move& moveData(int id);

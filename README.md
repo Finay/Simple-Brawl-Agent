@@ -45,11 +45,15 @@ There are two attack buttons. The movement state when the button is pressed pick
 | State | Light | Heavy |
 |---|---|---|
 | Standing | jab: fast, short | smash: longest wind-up, the main knockout move |
-| Running | dash poke: long reach, keeps momentum | sweep: low and wide, launches upward |
+| Running | dash poke: long reach | sweep: low and wide, launches upward |
 | Rising | up spike: above the head | uppercut: lifts the user, once per airtime (recovery move) |
 | Falling | down spike: below, knocks downward | dive: plunges until landing |
 
 Moves with larger hitboxes have longer wind-ups: the four light moves take 3 to 5 frames, the dive 8, the sweep 10, the uppercut 12 and the smash 16.
+
+The two running attacks stop the character dead for the wind-up, then thrust it forward as the hitbox appears.
+
+Getting hit locks out all input for a knockback period: at least a quarter of a second, longer for harder hits.
 
 Move timings, damage and hitbox shapes are in the table at the top of `sim/src/sim.cpp`.
 

@@ -20,9 +20,12 @@ Input botInput(const Game& game, int player) {
     bool strike = (h >> 13) % 3 == 0;
     auto sign = [](float v) { return v > 0.0f ? 1 : -1; };
 
-    bool off_stage = me.pos.x < st.left || me.pos.x > st.right;
+    bool below = me.pos.y < -0.2f;
+    bool off_stage = me.pos.x < st.left || me.pos.x > st.right || below;
     if (off_stage) {
-        in.move_x = -sign(me.pos.x);
+        // Underneath the stage, head outward first to get around its edge.
+        bool under = below && std::fabs(me.pos.x) < st.right + 0.4f;
+        in.move_x = under ? sign(me.pos.x) : -sign(me.pos.x);
         if (me.vel.y <= 0.0f && me.air_jumps > 0) {
             in.jump = tap;
         } else if (me.vel.y > 0.0f && me.vel.y < 2.5f && !me.up_used && me.pos.y < 1.5f) {

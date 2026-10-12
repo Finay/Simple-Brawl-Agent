@@ -34,8 +34,8 @@ constexpr int kAirJumps = 1;
 constexpr float kRunThreshold = 1.0f;
 
 constexpr float kHitstunDrag = 0.8f;
-constexpr float kHitstunPerKb = 1.6f;
-constexpr int kMinHitstun = 8;
+constexpr float kHitstunPerKb = 2.0f;
+constexpr int kMinHitstun = 15;
 constexpr int kLandingLag = 5;
 constexpr int kRespawnDelay = 45;
 constexpr int kRespawnInvuln = 120;
@@ -78,28 +78,28 @@ const Poly kLocalBody = makeLocalBody();
 const std::array<Move, kNumMoves> kMoves = {{
     {"jab",        3,  3,  8,  3.0f, 5.0f, 0.03f, 30.0f,
      poly({{0.5f, 0.5f}, {0.5f, 0.0f}, {1.3f, 0.25f}}),
-     1.0f, 1.0f, false, 0.0f, false},
+     1.0f, 1.0f, false, 0.0f, false, false, 0.0f},
     {"dash poke",  4,  5, 12,  6.0f, 7.0f, 0.06f, 40.0f,
      poly({{0.5f, 0.45f}, {0.5f, 0.05f}, {1.9f, 0.25f}}),
-     0.25f, 1.0f, false, 0.0f, false},
+     0.5f, 1.0f, false, 0.0f, false, true, 12.0f},
     {"up spike",   3,  5, 10,  5.0f, 7.0f, 0.07f, 85.0f,
      poly({{-0.3f, 0.9f}, {0.3f, 0.9f}, {0.0f, 1.9f}}),
-     1.0f, 1.0f, false, 0.0f, false},
+     1.0f, 1.0f, false, 0.0f, false, false, 0.0f},
     {"down spike", 5,  6, 12,  7.0f, 6.0f, 0.08f, -80.0f,
      poly({{-0.3f, -0.5f}, {0.3f, -0.5f}, {0.0f, -1.4f}}),
-     1.0f, 1.0f, false, 0.0f, false},
+     1.0f, 1.0f, false, 0.0f, false, false, 0.0f},
     {"smash",     16,  4, 22, 14.0f, 9.0f, 0.16f, 40.0f,
      poly({{0.5f, 0.9f}, {0.5f, -0.3f}, {2.1f, 0.3f}}),
-     1.0f, 1.0f, false, 0.0f, false},
+     1.0f, 1.0f, false, 0.0f, false, false, 0.0f},
     {"sweep",     10,  6, 18,  9.0f, 8.0f, 0.10f, 70.0f,
      poly({{0.4f, 0.1f}, {0.4f, -0.5f}, {1.8f, -0.5f}, {1.8f, -0.15f}}),
-     0.15f, 1.0f, false, 0.0f, false},
+     0.4f, 1.0f, false, 0.0f, false, true, 9.0f},
     {"uppercut",  12, 10, 16,  8.0f, 8.0f, 0.11f, 80.0f,
      poly({{-0.6f, 0.6f}, {0.6f, 0.6f}, {0.9f, 1.5f}, {0.0f, 2.0f}, {-0.9f, 1.5f}}),
-     1.0f, 1.0f, true, 13.0f, false},
+     1.0f, 1.0f, true, 13.0f, false, false, 0.0f},
     {"dive",       8, 45, 14, 10.0f, 8.0f, 0.12f, 55.0f,
      poly({{-0.45f, -0.5f}, {0.45f, -0.5f}, {0.0f, -1.5f}}),
-     1.0f, 0.3f, true, -kDiveSpeed, true},
+     1.0f, 0.3f, true, -kDiveSpeed, true, false, 0.0f},
 }};
 
 const Stage kStage = {
@@ -227,6 +227,7 @@ void Game::startAttack(Character& c, const Input& in, bool heavy) {
     c.move = static_cast<int8_t>(id);
     c.timer = 0;
     c.attack_hit = false;
+    if (kMoves[id].pause) c.vel.x = 0.0f;
 }
 
 void Game::advanceAttack(Character& c) {
@@ -234,6 +235,7 @@ void Game::advanceAttack(Character& c) {
     ++c.timer;
     if (c.timer == m.startup) {
         c.vel.x *= m.vx_scale;
+        if (m.lunge != 0.0f) c.vel.x = static_cast<float>(c.facing) * m.lunge;
         if (m.sets_vy) {
             c.vel.y = m.vy_set;
             c.grounded = false;

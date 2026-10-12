@@ -226,6 +226,62 @@ static void testOverlappingBodiesSeparate() {
     CHECK(h.state().ch[1].pos.x == 0.0f);
 }
 
+static void testSideAttacksPauseThenLunge() {
+    for (bool heavy : {false, true}) {
+        Game g;
+        place(g, 0, -3.0f, 0.5f, 1, true);
+        place(g, 1, 5.5f, 0.5f, -1, true);
+        Input hold;
+        hold.move_x = 1;
+        run(g, hold, {}, 10);
+        CHECK(g.state().ch[0].vel.x > 5.0f);
+        Input press = hold;
+        (heavy ? press.heavy : press.light) = true;
+        run(g, press, {}, 1);
+        const Move& m = moveData(g.state().ch[0].move);
+        CHECK(g.state().ch[0].move == (heavy ? kHeavyRun : kLightRun));
+        // Stopped dead for the whole wind-up, even with the direction held.
+        float x0 = g.state().ch[0].pos.x;
+        CHECK(g.state().ch[0].vel.x == 0.0f);
+        run(g, hold, {}, m.startup - 1);
+        CHECK(near(g.state().ch[0].pos.x, x0, 1e-4f));
+        // Thrust forward the moment the hitbox appears.
+        run(g, hold, {}, 1);
+        Poly hb;
+        CHECK(g.activeHitbox(0, hb));
+        CHECK(g.state().ch[0].vel.x > 7.0f);
+        run(g, hold, {}, m.active);
+        CHECK(g.state().ch[0].pos.x > x0 + 0.6f);
+    }
+}
+
+static void testHitLocksOutInputs() {
+    Game g;
+    place(g, 0, 0.0f, 0.5f, 1, true);
+    place(g, 1, 1.2f, 0.5f, -1, true);
+    Input press;
+    press.light = true;
+    run(g, press, {}, 4);
+    CHECK(g.state().ch[1].action == Action::Hitstun);
+    int locked = g.state().ch[1].timer;
+    CHECK(locked >= 15);  // a quarter of a second even for the weakest hit
+    // The victim mashes everything; nothing happens until the lockout ends.
+    Input mash;
+    mash.move_x = -1;
+    for (int f = 0; f < locked - 1; ++f) {
+        mash.jump = mash.light = mash.heavy = mash.shield = f % 2 == 0;
+        run(g, {}, mash, 1);
+        const Character& c = g.state().ch[1];
+        CHECK(c.action == Action::Hitstun);
+        CHECK(c.move == kNoMove);
+        CHECK(c.facing == -1);
+        CHECK(c.vel.x >= 0.0f);  // still travelling away, not steering back
+        CHECK(c.air_jumps == 1);
+    }
+    run(g, {}, {}, 2);
+    CHECK(g.state().ch[1].action == Action::Free);
+}
+
 static float boundsArea(const Poly& p) {
     Rect b = bounds(p);
     return (b.x1 - b.x0) * (b.y1 - b.y0);
@@ -528,6 +584,8 @@ int main() {
         {"walk-off loses a stock, respawns", testWalkOffLosesStockAndRespawns},
         {"uppercut once per airtime", testUppercutOncePerAirtime},
         {"overlapping bodies separate", testOverlappingBodiesSeparate},
+        {"side attacks pause, then lunge", testSideAttacksPauseThenLunge},
+        {"a hit locks out inputs", testHitLocksOutInputs},
         {"wind-up grows, then turns active", testWindupGrowsThenTurnsActive},
         {"larger hitboxes wind up longer", testLargerHitboxesWindUpLonger},
         {"shield blocks", testShieldBlocks},
