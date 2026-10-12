@@ -44,10 +44,10 @@ def parse_args():
     p.add_argument("--snapshot-every", type=int, default=50, help="mixed: updates between new snapshots")
     p.add_argument("--resample-every", type=int, default=10, help="mixed: updates between opponent reshuffles")
     p.add_argument("--latest-prob", type=float, default=0.3, help="mixed: chance a group gets the newest snapshot")
-    p.add_argument("--proximity-reward", type=float, default=1e-4,
-                   help="per-frame bonus for staying near the opponent; 0 = off")
-    p.add_argument("--proximity-near", type=float, default=2.0, help="distance for the full bonus")
-    p.add_argument("--proximity-far", type=float, default=8.0, help="distance where the bonus reaches zero")
+    p.add_argument("--distance-penalty", type=float, default=1e-4,
+                   help="per-frame cost for being far from the opponent; 0 = off")
+    p.add_argument("--penalty-near", type=float, default=2.0, help="no cost within this distance")
+    p.add_argument("--penalty-far", type=float, default=8.0, help="full cost beyond this distance")
     p.add_argument("--rollout", type=int, default=64, help="steps per env between updates")
     p.add_argument("--frame-skip", type=int, default=4, help="simulation frames per agent step")
     p.add_argument("--total-steps", type=int, default=300_000_000, help="agent steps to train for")
@@ -131,8 +131,8 @@ class Agent(nn.Module):
 
 def make_env(args, num_envs, opponent):
     return VecPlatformFighter(num_envs, opponent=opponent, frame_skip=args.frame_skip,
-                              proximity_reward=args.proximity_reward, proximity_near=args.proximity_near,
-                              proximity_far=args.proximity_far)
+                              distance_penalty=args.distance_penalty, penalty_near=args.penalty_near,
+                              penalty_far=args.penalty_far)
 
 
 def to_device(array, device):

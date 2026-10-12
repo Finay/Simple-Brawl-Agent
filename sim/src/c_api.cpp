@@ -71,7 +71,7 @@ struct pf_vec {
     std::vector<pf::Game> games;
     int frame_skip = 1;
     int agents = 1;
-    float proximity = 0.0f;  // per-frame bonus at full closeness
+    float distance_penalty = 0.0f;  // per-frame cost at full separation
     float near_dist = 2.0f;
     float far_dist = 8.0f;
 };
@@ -117,8 +117,8 @@ void pf_vec_reset(pf_vec* vec, float* obs) {
     writeObs(vec, obs);
 }
 
-void pf_vec_set_proximity_reward(pf_vec* vec, float per_frame, float near_dist, float far_dist) {
-    vec->proximity = per_frame;
+void pf_vec_set_distance_penalty(pf_vec* vec, float per_frame, float near_dist, float far_dist) {
+    vec->distance_penalty = per_frame;
     vec->near_dist = near_dist;
     vec->far_dist = std::max(far_dist, near_dist + 1e-3f);
 }
@@ -148,10 +148,10 @@ void pf_vec_step(pf_vec* vec, const int* actions, float* obs, float* rewards,
             }
             const pf::Character& a = g.state().ch[0];
             const pf::Character& b = g.state().ch[1];
-            if (vec->proximity != 0.0f && a.action != pf::Action::Dead && b.action != pf::Action::Dead) {
+            if (vec->distance_penalty != 0.0f && a.action != pf::Action::Dead && b.action != pf::Action::Dead) {
                 float dist = std::hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
-                float w = std::clamp((vec->far_dist - dist) / (vec->far_dist - vec->near_dist), 0.0f, 1.0f);
-                for (int p = 0; p < agents; ++p) reward[p] += vec->proximity * w;
+                float w = std::clamp((dist - vec->near_dist) / (vec->far_dist - vec->near_dist), 0.0f, 1.0f);
+                for (int p = 0; p < agents; ++p) reward[p] -= vec->distance_penalty * w;
             }
         }
         const pf::State& s = g.state();

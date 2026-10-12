@@ -56,7 +56,7 @@ def _load(path=None):
     lib.pf_vec_num_envs.argtypes = [ctypes.c_void_p]
     lib.pf_vec_agents.argtypes = [ctypes.c_void_p]
     lib.pf_vec_reset.argtypes = [ctypes.c_void_p, _float_p]
-    lib.pf_vec_set_proximity_reward.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+    lib.pf_vec_set_distance_penalty.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_float]
     lib.pf_vec_step.argtypes = [ctypes.c_void_p, _int_p, _float_p, _float_p, _byte_p, _byte_p, _int_p]
     return lib
 
@@ -80,10 +80,10 @@ class VecPlatformFighter:
     taken and minus 1 for each stock lost. Observation features are listed in
     `Game::observe` in sim/src/sim.cpp.
 
-    proximity_reward > 0 adds shaping against passive play: every frame both
-    fighters are alive, each agent gets that amount when they are within
-    proximity_near of each other, fading linearly to nothing at proximity_far.
-    Both sides get it, so rewards stop being zero-sum.
+    distance_penalty > 0 adds shaping against passive play: every frame both
+    fighters are alive, each agent loses that amount when they are further
+    apart than penalty_far, fading linearly to nothing at penalty_near.
+    Both sides pay it, so rewards stop being zero-sum.
 
     Returned arrays are views of buffers that the next step overwrites; copy
     them if they need to outlive it. When a match ends its observation is
@@ -93,13 +93,13 @@ class VecPlatformFighter:
     ACTION_NVEC = (3, 2, 2, 2, 2, 2)
 
     def __init__(self, num_envs, opponent="bot", frame_skip=1, stocks=3, max_frames=60 * 60 * 3,
-                 proximity_reward=0.0, proximity_near=2.0, proximity_far=8.0, lib_path=None):
+                 distance_penalty=0.0, penalty_near=2.0, penalty_far=8.0, lib_path=None):
         if opponent not in ("bot", "self"):
             raise ValueError("opponent must be 'bot' or 'self'")
         self._lib = _load(lib_path)
         self._vec = self._lib.pf_vec_create(num_envs, stocks, max_frames, frame_skip,
                                             1 if opponent == "bot" else 0)
-        self._lib.pf_vec_set_proximity_reward(self._vec, proximity_reward, proximity_near, proximity_far)
+        self._lib.pf_vec_set_distance_penalty(self._vec, distance_penalty, penalty_near, penalty_far)
         self.num_envs = self._lib.pf_vec_num_envs(self._vec)
         self.num_agents = self._lib.pf_vec_agents(self._vec)
         self.obs_size = self._lib.pf_obs_size()
