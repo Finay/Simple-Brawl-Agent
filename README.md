@@ -53,7 +53,9 @@ Moves with larger hitboxes have longer wind-ups: the four light moves take 3 to 
 
 The two running attacks stop the character dead for the wind-up, then thrust it forward as the hitbox appears.
 
-Getting hit locks out all input for a knockback period: at least a quarter of a second, longer for harder hits.
+The two running attacks share a one-second cooldown; pressing attack while running during it gives the standing move instead.
+
+Getting hit locks out all input for a short knockback period: about a sixth of a second for the weakest hit, longer for harder ones.
 
 Move timings, damage and hitbox shapes are in the table at the top of `sim/src/sim.cpp`.
 
@@ -72,15 +74,15 @@ Training runs headless: `make sim` builds `build/libpfenv.so` (`.dylib` on macOS
 from pfenv import VecPlatformFighter
 
 env = VecPlatformFighter(num_envs=256, opponent="bot", frame_skip=4)  # or opponent="self"
-obs = env.reset()                       # (256, 47) float32
+obs = env.reset()                       # (256, 49) float32
 obs, rewards, terminated, truncated, winners = env.step(actions)   # actions: (256, 6) ints
 ```
 
 - **Action:** six integers per agent, a MultiDiscrete `[3, 2, 2, 2, 2, 2]`: move (0 left, 1 none, 2 right), jump, down, light, heavy, shield. Each step's buttons count as new presses.
-- **Observation:** 47 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Not mirrored for player 2.
+- **Observation:** 49 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Not mirrored for player 2.
 - **Reward:** (damage dealt − damage taken) / 100, +1 per stock taken, −1 per stock lost.
 - **Episode end:** `terminated` when a player runs out of stocks, `truncated` on the time limit. Matches reset automatically.
-- **Self-play:** `opponent="self"` gives two agents per match; shapes gain an agent axis, e.g. observations `(N, 2, 47)`.
+- **Self-play:** `opponent="self"` gives two agents per match; shapes gain an agent axis, e.g. observations `(N, 2, 49)`.
 - **Arrays:** numpy views when numpy is installed, ctypes arrays otherwise. They are overwritten by the next step.
 
 ```

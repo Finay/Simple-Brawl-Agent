@@ -34,9 +34,10 @@ constexpr int kAirJumps = 1;
 constexpr float kRunThreshold = 1.0f;
 
 constexpr float kHitstunDrag = 0.8f;
-constexpr float kHitstunPerKb = 2.0f;
-constexpr int kMinHitstun = 15;
+constexpr float kHitstunPerKb = 1.2f;
+constexpr int kMinHitstun = 10;
 constexpr int kLandingLag = 5;
+constexpr int kSideCooldown = 60;  // frames before another running attack
 constexpr int kRespawnDelay = 45;
 constexpr int kRespawnInvuln = 120;
 constexpr float kPlatformSnap = 0.01f;
@@ -218,7 +219,16 @@ MoveState Game::moveState(int player, const Input& in) const {
 
 void Game::startAttack(Character& c, const Input& in, bool heavy) {
     int player = static_cast<int>(&c - s_.ch.data());
-    int id = (heavy ? 4 : 0) + static_cast<int>(moveState(player, in));
+    MoveState ms = moveState(player, in);
+    // Running attacks share a cooldown; until it ends the standing move comes out.
+    if (ms == MoveState::Run) {
+        if (c.side_cooldown > 0) {
+            ms = MoveState::Idle;
+        } else {
+            c.side_cooldown = kSideCooldown;
+        }
+    }
+    int id = (heavy ? 4 : 0) + static_cast<int>(ms);
     if (id == kHeavyRise) {
         if (c.up_used) return;
         c.up_used = true;
@@ -249,6 +259,7 @@ void Game::advanceAttack(Character& c) {
 
 void Game::control(Character& c, const Input& in) {
     if (c.invuln > 0) --c.invuln;
+    if (c.side_cooldown > 0) --c.side_cooldown;
     if (c.action != Action::Shield) c.shield_hp = std::min(kShieldMax, c.shield_hp + kShieldRegen);
     bool jump = in.jump && !c.prev.jump;
     bool down = in.down && !c.prev.down;
@@ -567,6 +578,7 @@ void Game::observe(int player, float* out) const {
         out[i++] = c.invuln > 0 ? 1.0f : 0.0f;
         out[i++] = c.up_used ? 1.0f : 0.0f;
         out[i++] = c.air_shield_used ? 1.0f : 0.0f;
+        out[i++] = static_cast<float>(c.side_cooldown) / static_cast<float>(kSideCooldown);
     };
     const Character& me = s_.ch[player];
     const Character& opp = s_.ch[1 - player];

@@ -257,6 +257,66 @@ static void testSideAttacksPauseThenLunge() {
     }
 }
 
+static void testSideAttackCooldown() {
+    Game g;
+    place(g, 0, -4.0f, 0.5f, 1, true);
+    place(g, 1, 5.5f, 2.7f, -1, true);  // out of the way on a platform
+    Input hold, press;
+    hold.move_x = 1;
+    press = hold;
+    press.light = true;
+    auto finish = [&] {
+        while (g.state().ch[0].action != Action::Free) run(g, {}, {}, 1);
+    };
+    run(g, hold, {}, 5);
+    run(g, press, {}, 1);
+    CHECK(g.state().ch[0].move == kLightRun);
+    finish();
+    // Straight back into a run and another press: the standing jab comes out instead.
+    run(g, hold, {}, 3);
+    run(g, press, {}, 1);
+    CHECK(g.state().ch[0].move == kLightIdle);
+    finish();
+    // The heavy running attack shares the cooldown.
+    Input heavy = hold;
+    heavy.heavy = true;
+    run(g, hold, {}, 2);
+    run(g, heavy, {}, 1);
+    CHECK(g.state().ch[0].move == kHeavyIdle);
+    finish();
+    // Once a second has passed since the first one, it is available again.
+    place(g, 0, -4.0f, 0.5f, 1, true);
+    run(g, {}, {}, 60);
+    run(g, hold, {}, 3);
+    run(g, press, {}, 1);
+    CHECK(g.state().ch[0].move == kLightRun);
+}
+
+static void testSideAttackCannotStunlock() {
+    // Attacker chains running pokes as fast as possible; the victim mashes jump.
+    // The victim must get control back (leave hitstun) between hits.
+    Game g;
+    place(g, 0, -4.0f, 0.5f, 1, true);
+    place(g, 1, -2.4f, 0.5f, -1, true);
+    int hits = 0, free_between = 0;
+    bool was_free_since_hit = true;
+    for (int f = 0; f < 300; ++f) {
+        Input a;
+        a.move_x = g.state().ch[1].pos.x > g.state().ch[0].pos.x ? 1 : -1;
+        a.light = f % 2 == 0;
+        run(g, a, {}, 1);
+        const Character& v = g.state().ch[1];
+        if (v.action == Action::Free && v.grounded) was_free_since_hit = true;
+        if (g.state().events.damage_taken[1] > 0.0f) {
+            ++hits;
+            if (was_free_since_hit) ++free_between;
+            was_free_since_hit = false;
+        }
+    }
+    CHECK(hits >= 2);
+    CHECK(free_between == hits);
+}
+
 static void testHitLocksOutInputs() {
     Game g;
     place(g, 0, 0.0f, 0.5f, 1, true);
@@ -266,7 +326,7 @@ static void testHitLocksOutInputs() {
     run(g, press, {}, 4);
     CHECK(g.state().ch[1].action == Action::Hitstun);
     int locked = g.state().ch[1].timer;
-    CHECK(locked >= 15);  // a quarter of a second even for the weakest hit
+    CHECK(locked >= 8 && locked <= 12);  // brief for the weakest hit
     // The victim mashes everything; nothing happens until the lockout ends.
     Input mash;
     mash.move_x = -1;
@@ -659,6 +719,8 @@ int main() {
         {"uppercut once per airtime", testUppercutOncePerAirtime},
         {"overlapping bodies separate", testOverlappingBodiesSeparate},
         {"side attacks pause, then lunge", testSideAttacksPauseThenLunge},
+        {"side attacks share a cooldown", testSideAttackCooldown},
+        {"side attacks cannot stunlock", testSideAttackCannotStunlock},
         {"a hit locks out inputs", testHitLocksOutInputs},
         {"wind-up grows, then turns active", testWindupGrowsThenTurnsActive},
         {"larger hitboxes wind up longer", testLargerHitboxesWindUpLonger},

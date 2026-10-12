@@ -90,6 +90,7 @@ struct Character {
     bool fastfall = false;
     bool up_used = false;  // uppercut spent until next landing
     bool air_shield_used = false;  // air shield spent until next landing
+    int side_cooldown = 0;  // frames until a running attack is available again
     int air_jumps = 0;
     float damage = 0.0f;
     float shield_hp = 0.0f;
@@ -121,7 +122,7 @@ struct State {
 
 class Game {
 public:
-    static constexpr int kObsSize = 47;
+    static constexpr int kObsSize = 49;
 
     explicit Game(Config cfg = {});
 
