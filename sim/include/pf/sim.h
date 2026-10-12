@@ -20,7 +20,7 @@ struct Input {
     bool down = false;  // fast-fall, and fall through soft platforms
     bool light = false;
     bool heavy = false;
-    bool shield = false;  // held, grounded only
+    bool shield = false;  // held on the ground; a press in the air gives a short one
 };
 
 enum class Action : uint8_t { Free, Attack, Hitstun, Lag, Dead, Shield };
@@ -87,12 +87,15 @@ struct Character {
     bool grounded = false;
     bool fastfall = false;
     bool up_used = false;  // uppercut spent until next landing
+    bool air_shield_used = false;  // air shield spent until next landing
     int air_jumps = 0;
     float damage = 0.0f;
     float shield_hp = 0.0f;
     int stocks = 0;
     Action action = Action::Free;
-    int timer = 0;  // attack: frames elapsed; hitstun/lag/dead: frames left
+    // attack: frames elapsed; hitstun/lag/dead: frames left;
+    // shield: frames left for an air shield, 0 for a held ground shield
+    int timer = 0;
     int8_t move = kNoMove;
     bool attack_hit = false;
     int invuln = 0;
@@ -116,7 +119,7 @@ struct State {
 
 class Game {
 public:
-    static constexpr int kObsSize = 45;
+    static constexpr int kObsSize = 47;
 
     explicit Game(Config cfg = {});
 
@@ -140,6 +143,7 @@ public:
 
     // The shield bubble while it is up. Attacks that touch it are blocked.
     // It shrinks as it weakens, exposing the parts of the body outside it.
+    // In the air it lasts a fixed short time and stops vertical motion when raised.
     bool shield(int player, Poly& out) const;
 
     MoveState moveState(int player, const Input& in) const;

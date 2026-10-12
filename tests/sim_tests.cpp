@@ -302,14 +302,63 @@ static void testShieldBlocks() {
     CHECK(g.state().ch[1].action == Action::Free);
 }
 
-static void testShieldOnlyOnGround() {
+static void testAirShieldIsShortAndStopsVerticalMotion() {
     Game g;
-    place(g, 0, 0.0f, 3.0f, 1, false);
-    Input guard;
+    place(g, 1, 5.0f, 0.5f, -1, true);
+    // High above the left end of the stage, clear of the soft platforms, rising.
+    place(g, 0, -5.4f, 7.0f, 1, false);
+    g.mutableState().ch[0].vel.y = 12.0f;
+    Input jump, guard;
+    jump.jump = true;
     guard.shield = true;
-    run(g, guard, {}, 2);
+    run(g, guard, {}, 1);
     Poly bubble;
+    CHECK(g.shield(0, bubble));
+    // Rising speed is gone; only this frame's gravity remains.
+    CHECK(g.state().ch[0].vel.y <= 0.0f && g.state().ch[0].vel.y > -1.0f);
+    // It ends by itself even while the button stays held.
+    int frames = 1;
+    while (g.shield(0, bubble) && frames < 100) {
+        run(g, guard, {}, 1);
+        ++frames;
+    }
+    CHECK(frames >= 15 && frames <= 25);
+    CHECK(!g.state().ch[0].grounded);
+    // Only one per airtime.
+    while (g.state().ch[0].action != Action::Free) run(g, {}, {}, 1);
+    CHECK(!g.state().ch[0].grounded);
+    run(g, guard, {}, 1);
     CHECK(!g.shield(0, bubble));
+    // Landing gives it back.
+    run(g, {}, {}, 90);
+    CHECK(g.state().ch[0].grounded);
+    run(g, jump, {}, 1);
+    run(g, {}, {}, 4);
+    run(g, guard, {}, 1);
+    CHECK(g.shield(0, bubble));
+}
+
+static void testAirShieldBlocksAndStopsAFall() {
+    Game g;
+    place(g, 0, 0.0f, 0.5f, 1, true);
+    place(g, 1, 0.0f, 2.0f, -1, false);
+    g.mutableState().ch[1].vel.y = -10.0f;
+    Input guard, press;
+    guard.shield = true;
+    press.light = true;  // standing jab does not reach up; use a jump-in up spike instead
+    Input jump;
+    jump.jump = true;
+    run(g, jump, guard, 1);
+    CHECK(g.state().ch[1].vel.y > -1.0f);  // the fall was cancelled
+    run(g, press, guard, 1);
+    CHECK(g.state().ch[0].move == kLightRise);
+    float blocked = 0.0f;
+    for (int f = 0; f < 12; ++f) {
+        run(g, {}, guard, 1);
+        blocked += g.state().events.damage_blocked[1];
+    }
+    CHECK(blocked > 0.0f);
+    CHECK(g.state().ch[1].damage == 0.0f);
 }
 
 static void testShieldShrinksAndBreaks() {
@@ -482,7 +531,8 @@ int main() {
         {"wind-up grows, then turns active", testWindupGrowsThenTurnsActive},
         {"larger hitboxes wind up longer", testLargerHitboxesWindUpLonger},
         {"shield blocks", testShieldBlocks},
-        {"shield only on the ground", testShieldOnlyOnGround},
+        {"air shield is short and stops vertical motion", testAirShieldIsShortAndStopsVerticalMotion},
+        {"air shield blocks and stops a fall", testAirShieldBlocksAndStopsAFall},
         {"shield shrinks and breaks", testShieldShrinksAndBreaks},
         {"shrunk shield leaves body exposed", testShrunkShieldLeavesBodyExposed},
         {"stage is an inverted trapezoid", testStageIsInvertedTrapezoid},

@@ -35,6 +35,7 @@ R restarts, Esc quits. `--screenshot out.bmp --frames N [--wait hitbox|windup|sh
 - **Stocks:** leaving the dashed blast zone costs a stock. Three stocks each; last one standing wins. A three-minute time limit breaks ties by stocks, then by lower damage.
 - **Movement:** run, jump, one air jump, fast-fall (down while falling).
 - **Shield:** hold the shield button on the ground for a bubble that blocks any attack touching it. It drains while held and when hit, and shrinks as it drains, leaving the parts of the body outside it open to hits. If it runs out it breaks and stuns its owner. It refills when down. You can jump out of it but not move or attack.
+- **Air shield:** pressing shield in the air raises the same bubble for a fixed 0.3 seconds and cancels vertical speed at that moment, then gravity resumes. Once per airtime; landing restores it.
 - **Character:** an equilateral triangle on top of a semicircle. It leans toward the direction it faces. Grounded characters that overlap push each other apart.
 
 ### Attacks
@@ -61,7 +62,7 @@ Move timings, damage and hitbox shapes are in the table at the top of `sim/src/s
 
 ## Training interface
 
-An action is six integers per player: `move_x` (-1, 0, 1), `jump`, `down`, `light`, `heavy`, `shield`. One step is one frame. The observation is 45 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Observations are not mirrored for player 2.
+An action is six integers per player: `move_x` (-1, 0, 1), `jump`, `down`, `light`, `heavy`, `shield`. One step is one frame. The observation is 47 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Observations are not mirrored for player 2.
 
 ```
 make sim && python3 python/pfenv.py

@@ -51,6 +51,7 @@ constexpr float kShieldRadiusMin = 0.45f;
 constexpr float kShieldCenterY = (kTriHeight - kRadius) / 2.0f;
 constexpr float kShieldPush = 3.0f;
 constexpr int kShieldDropLag = 5;
+constexpr int kAirShieldFrames = 18;
 constexpr int kShieldBreakStun = 100;
 
 Poly poly(std::initializer_list<Vec2> pts) {
@@ -251,6 +252,7 @@ void Game::control(Character& c, const Input& in) {
     bool down = in.down && !c.prev.down;
     bool light = in.light && !c.prev.light;
     bool heavy = in.heavy && !c.prev.heavy;
+    bool shield_press = in.shield && !c.prev.shield;
 
     switch (c.action) {
         case Action::Hitstun:
@@ -264,6 +266,13 @@ void Game::control(Character& c, const Input& in) {
             if (in.move_x != 0) c.facing = in.move_x;
             if (in.shield && c.grounded) {
                 c.action = Action::Shield;
+                c.timer = 0;
+            } else if (shield_press && !c.grounded && !c.air_shield_used) {
+                c.action = Action::Shield;
+                c.timer = kAirShieldFrames;
+                c.air_shield_used = true;
+                c.fastfall = false;
+                c.vel.y = 0.0f;
             } else if (heavy || light) {
                 startAttack(c, in, heavy);
             } else if (jump) {
@@ -281,7 +290,17 @@ void Game::control(Character& c, const Input& in) {
             }
             break;
         case Action::Shield:
-            if (jump) {
+            // An air shield that lands carries on as a ground shield.
+            if (c.timer > 0 && c.grounded) c.timer = 0;
+            if (c.timer > 0) {
+                c.shield_hp -= kShieldDrain;
+                if (c.shield_hp <= 0.0f) {
+                    breakShield(c);
+                } else if (--c.timer == 0) {
+                    c.action = Action::Lag;
+                    c.timer = kShieldDropLag;
+                }
+            } else if (jump) {
                 c.action = Action::Free;
                 c.vel.y = kJumpSpeed;
                 c.grounded = false;
@@ -324,6 +343,7 @@ void Game::land(Character& c) {
     c.air_jumps = kAirJumps;
     c.fastfall = false;
     c.up_used = false;
+    c.air_shield_used = false;
     if (c.action == Action::Attack && isAerialMove(c.move)) {
         const Move& m = kMoves[c.move];
         if (m.until_land) {
@@ -544,6 +564,7 @@ void Game::observe(int player, float* out) const {
         out[i++] = hitboxOut(c) ? 1.0f : 0.0f;
         out[i++] = c.invuln > 0 ? 1.0f : 0.0f;
         out[i++] = c.up_used ? 1.0f : 0.0f;
+        out[i++] = c.air_shield_used ? 1.0f : 0.0f;
     };
     const Character& me = s_.ch[player];
     const Character& opp = s_.ch[1 - player];

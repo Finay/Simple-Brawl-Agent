@@ -56,7 +56,8 @@ Input botInput(const Game& game, int player) {
         const Move& m = moveData(opp.move);
         threatened = opp.timer < m.startup + m.active && adx < 2.6f && std::fabs(dy) < 1.5f;
     }
-    if (me.grounded && wary && threatened && me.shield_hp > 15.0f) {
+    bool can_shield = me.grounded || !me.air_shield_used || me.action == Action::Shield;
+    if (can_shield && wary && threatened && me.shield_hp > 15.0f) {
         Input guard;
         guard.shield = true;
         return guard;
