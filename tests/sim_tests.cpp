@@ -2,8 +2,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #include "pf/bot.h"
+#include "pf/c_api.h"
 #include "pf/sim.h"
 
 using namespace pf;
@@ -554,6 +556,78 @@ static void testBotMatchFinishes() {
                 g.state().winner, g.state().ch[0].stocks, g.state().ch[1].stocks);
 }
 
+static void testVecApiRunsAndResets() {
+    for (int opponent : {1, 0}) {
+        const int n = 8;
+        pf_vec* v = pf_vec_create(n, 1, 600, 4, opponent);
+        const int agents = pf_vec_agents(v);
+        const int size = pf_obs_size();
+        CHECK(agents == (opponent == 0 ? 2 : 1));
+        CHECK(pf_vec_num_envs(v) == n);
+        std::vector<float> obs(n * agents * size, NAN), rew(n * agents);
+        std::vector<unsigned char> term(n), trunc(n);
+        std::vector<int> win(n), act(n * agents * 6);
+        pf_vec_reset(v, obs.data());
+        unsigned seed = 3;
+        auto next = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return seed >> 16;
+        };
+        int terminated = 0, truncated = 0;
+        bool finite = true, zero_sum = true, fresh = true, exclusive = true;
+        for (int step = 0; step < 3000; ++step) {
+            for (size_t i = 0; i < act.size(); ++i) act[i] = static_cast<int>(next() % (i % 6 == 0 ? 3 : 2));
+            pf_vec_step(v, act.data(), obs.data(), rew.data(), term.data(), trunc.data(), win.data());
+            for (int e = 0; e < n; ++e) {
+                terminated += term[e];
+                truncated += trunc[e];
+                exclusive = exclusive && !(term[e] && trunc[e]);
+                // After a match ends, the observation is frame 0 of a new one: full time left.
+                if (term[e] || trunc[e]) fresh = fresh && obs[e * agents * size + size - 1] == 1.0f;
+                if (agents == 2) zero_sum = zero_sum && near(rew[e * 2] + rew[e * 2 + 1], 0.0f, 1e-5f);
+            }
+            for (float x : obs) finite = finite && std::isfinite(x);
+        }
+        CHECK(finite);
+        CHECK(zero_sum);
+        CHECK(fresh);
+        CHECK(exclusive);
+        CHECK(terminated > 0);
+        // Random agents kill each other slowly enough that some matches time out.
+        if (opponent == 0) CHECK(truncated > 0);
+        pf_vec_destroy(v);
+    }
+}
+
+static void testVecApiActions() {
+    pf_vec* v = pf_vec_create(1, 3, 0, 1, 0);
+    const int size = pf_obs_size();
+    std::vector<float> obs(2 * size), rew(2);
+    unsigned char term = 0, trunc = 0;
+    int win = 0;
+    pf_vec_reset(v, obs.data());
+    float x0 = obs[0], x1 = obs[size];
+    // Move index 2 is right, 0 is left, 1 is none.
+    int right_and_left[12] = {2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 20; ++i) pf_vec_step(v, right_and_left, obs.data(), rew.data(), &term, &trunc, &win);
+    CHECK(obs[0] > x0 + 0.1f);
+    CHECK(obs[size] < x1 - 0.1f);
+    int still[12] = {1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 30; ++i) pf_vec_step(v, still, obs.data(), rew.data(), &term, &trunc, &win);
+    float rest = obs[0];
+    pf_vec_step(v, still, obs.data(), rew.data(), &term, &trunc, &win);
+    CHECK(near(obs[0], rest, 1e-5f));
+    // Jump held on consecutive steps is two presses: ground jump, then the air jump.
+    int jump[12] = {1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0};
+    CHECK(obs[6] == 1.0f);  // air jumps available
+    pf_vec_step(v, jump, obs.data(), rew.data(), &term, &trunc, &win);
+    CHECK(obs[5] == 0.0f);  // airborne
+    CHECK(obs[6] == 1.0f);
+    pf_vec_step(v, jump, obs.data(), rew.data(), &term, &trunc, &win);
+    CHECK(obs[6] == 0.0f);
+    pf_vec_destroy(v);
+}
+
 static void benchmark() {
     Game g;
     unsigned seed = 1;
@@ -597,6 +671,8 @@ int main() {
         {"game end and winner", testGameEndsAndReportsWinner},
         {"deterministic and finite", testDeterministicAndFinite},
         {"bot match finishes", testBotMatchFinishes},
+        {"batched API runs and resets", testVecApiRunsAndResets},
+        {"batched API actions", testVecApiActions},
     };
     for (auto& t : tests) {
         int before = g_failures;

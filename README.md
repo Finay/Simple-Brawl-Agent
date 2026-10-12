@@ -66,13 +66,30 @@ Move timings, damage and hitbox shapes are in the table at the top of `sim/src/s
 
 ## Training interface
 
-An action is six integers per player: `move_x` (-1, 0, 1), `jump`, `down`, `light`, `heavy`, `shield`. One step is one frame. The observation is 47 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Observations are not mirrored for player 2.
+Training runs headless: `make sim` builds `build/libpfenv.so` (`.dylib` on macOS) with no OpenGL or display, and `python/pfenv.py` loads it.
+
+```python
+from pfenv import VecPlatformFighter
+
+env = VecPlatformFighter(num_envs=256, opponent="bot", frame_skip=4)  # or opponent="self"
+obs = env.reset()                       # (256, 47) float32
+obs, rewards, terminated, truncated, winners = env.step(actions)   # actions: (256, 6) ints
+```
+
+- **Action:** six integers per agent, a MultiDiscrete `[3, 2, 2, 2, 2, 2]`: move (0 left, 1 none, 2 right), jump, down, light, heavy, shield. Each step's buttons count as new presses.
+- **Observation:** 47 floats from the acting player's point of view (own state, opponent state, relative position, time left); see `Game::observe`. Not mirrored for player 2.
+- **Reward:** (damage dealt − damage taken) / 100, +1 per stock taken, −1 per stock lost.
+- **Episode end:** `terminated` when a player runs out of stocks, `truncated` on the time limit. Matches reset automatically.
+- **Self-play:** `opponent="self"` gives two agents per match; shapes gain an agent axis, e.g. observations `(N, 2, 47)`.
+- **Arrays:** numpy views when numpy is installed, ctypes arrays otherwise. They are overwritten by the next step.
 
 ```
 make sim && python3 python/pfenv.py
 ```
 
-runs a random agent against the bot as a smoke test.
+runs random agents in both modes as a smoke test and prints throughput (about 1.1 million frames per second on one core of the lab login host).
+
+`PlatformFighterEnv` in the same file steps a single match frame by frame, with held-button semantics identical to the viewer.
 
 ## Compute
 

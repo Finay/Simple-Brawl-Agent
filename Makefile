@@ -47,7 +47,7 @@ $(APP_OBJS): CXXFLAGS += $(APP_FLAGS)
 $(SHLIB): $(SIM_OBJS) $(API_OBJS)
 	$(CXX) -shared $^ -o $@
 
-$(BUILD)/pf_tests: $(BUILD)/tests/sim_tests.o $(SIM_OBJS)
+$(BUILD)/pf_tests: $(BUILD)/tests/sim_tests.o $(SIM_OBJS) $(API_OBJS)
 	$(CXX) $^ -o $@
 
 $(BUILD)/pf_play: $(APP_OBJS) $(SIM_OBJS)
