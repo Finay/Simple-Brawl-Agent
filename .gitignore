@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.DS_Store
+.idea/
+
+# training outputs
+checkpoints/
+runs/
+*.pt
+*.zip
+
+# build outputs
+build/
+
+# Claude Code worktrees
+.claude/worktrees/
