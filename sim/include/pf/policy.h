@@ -22,6 +22,12 @@ public:
 
     int frameSkip() const { return frame_skip_; }
 
+    // Sampling is seeded from the system by default, so matches differ.
+    void seed(unsigned value) { rng_.seed(value); }
+
+    // Chance that a decision is replaced by a uniformly random action.
+    void setNoise(float probability) { noise_ = probability; }
+
 private:
     struct Layer {
         int in = 0, out = 0;
@@ -34,7 +40,8 @@ private:
     int frame_skip_ = 1;
     int countdown_ = 0;
     Input held_;
-    std::mt19937 rng_{12345};
+    float noise_ = 0.0f;
+    std::mt19937 rng_{std::random_device{}()};
 };
 
 }  // namespace pf

@@ -335,6 +335,7 @@ bool writeBmp(const std::string& path, int w, int h, const std::vector<unsigned 
 void usage() {
     std::puts(
         "pf_play [--p1 human|bot|idle|agent:FILE] [--p2 human|bot|idle|agent:FILE]\n"
+        "        [--noise P] [--seed N]   agents: random-action chance, fixed sampling seed\n"
         "        [--screenshot out.bmp --frames N [--wait hitbox|windup|shield]]\n"
         "\n"
         "P1: A/D move, W jump, S down, F light, G heavy, H shield\n"
@@ -350,12 +351,18 @@ int main(int argc, char** argv) {
     std::string shot;
     int shot_frames = 0;
     std::string wait_for;
+    float noise = 0.0f;
+    long seed = -1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         bool has_value = i + 1 < argc;
         if ((a == "--p1" || a == "--p2") && has_value) {
             int p = a == "--p1" ? 0 : 1;
             if (!parseController(argv[++i], ctl[p], policy[p])) return 1;
+        } else if (a == "--noise" && has_value) {
+            noise = static_cast<float>(std::atof(argv[++i]));
+        } else if (a == "--seed" && has_value) {
+            seed = std::atol(argv[++i]);
         } else if (a == "--screenshot" && has_value) {
             shot = argv[++i];
         } else if (a == "--frames" && has_value) {
@@ -366,6 +373,11 @@ int main(int argc, char** argv) {
             usage();
             return a == "--help" ? 0 : 1;
         }
+    }
+
+    for (int p = 0; p < kNumPlayers; ++p) {
+        policy[p].setNoise(noise);
+        if (seed >= 0) policy[p].seed(static_cast<unsigned>(seed) * 2u + static_cast<unsigned>(p));
     }
 
     if (!glfwInit()) {

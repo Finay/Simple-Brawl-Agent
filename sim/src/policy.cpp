@@ -102,7 +102,10 @@ Input Policy::next(Game& game, int player) {
         for (int i = 0; i < 3; ++i) total += p[i] = std::exp(logits[static_cast<size_t>(i)] - top);
         float r = uniform(rng_) * total;
         int move = r < p[0] ? 0 : (r < p[0] + p[1] ? 1 : 2);
+        bool random_action = uniform(rng_) < noise_;
+        if (random_action) move = static_cast<int>(uniform(rng_) * 3.0f) % 3;
         auto pressed = [&](int i) {
+            if (random_action) return uniform(rng_) < 0.5f;
             return uniform(rng_) < 1.0f / (1.0f + std::exp(-logits[static_cast<size_t>(3 + i)]));
         };
 
