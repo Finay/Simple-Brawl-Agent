@@ -1,4 +1,4 @@
-# Platform-Fighter-Agent
+# Simple-Brawl-Agent
 
 A small Smash-style platform fighter built as a training environment for reinforcement-learning agents, drawn in the vector style of 1979 Asteroids.
 

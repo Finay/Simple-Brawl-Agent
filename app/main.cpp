@@ -390,7 +390,7 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_SAMPLES, 4);
     if (!shot.empty()) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* window = glfwCreateWindow(960, 720, "Platform Fighter", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(960, 720, "Simple Brawl", nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "could not create an OpenGL 3.3 window\n");
         glfwTerminate();
